@@ -20,6 +20,7 @@ import difflib
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -33,13 +34,14 @@ from ledger.core.breaks import removed_contracts, removed_fields
 from ledger.core.brief import (
     ContractBreak, FieldBreak, Impact, ImpactBrief, Recommendation, _names_contract, build_brief,
 )
-from ledger.core.contracts import ContractRef, Edge, Surface, discover, discover_in_text
+from ledger.core.contracts import ContractRef, Edge, Surface, discover, discover_in_text, http_equivalent
 from ledger.core.credentials import api_host, from_git
 from ledger.core.join import Change, find_siblings
 from ledger.core.tickets import extract_tickets
 from ledger.pipeline.collect import collect
 from ledger.pipeline.decisions import load_decisions
 from ledger.pipeline.scan import ScanCache
+from ledger.pipeline.signals import NOT_A_CHANGE
 
 
 class LedgerError(Exception):
@@ -368,9 +370,23 @@ class Index(Protocol):
 
 
 class LiveIndex:
-    """No database: read the estate for this call. Same interface as the store."""
+    """No database: read the estate for this call. Same interface as the store.
+
+    What a stored index remembers, this reads from the code each time, and
+    only literally: which way each repository faces a contract (from its call
+    sites), which payload names another repository reads (from its code), and
+    which other changes in flight are about the same thing (from their diffs).
+    """
 
     source = "live"
+
+    #: Other changes in flight read per brief, newest first, to link work that
+    #: shares no ticket key. Each costs one diff.
+    LINK_CAP = 40
+    #: "Around the same time", for two changes by the same author.
+    NEAR = timedelta(hours=2)
+    #: A shared signal carried by more of the other changes than this links nothing.
+    RARE = 3
 
     def __init__(self, vcs: VcsAdapter, repos: dict[str, str], cache: ScanCache | None = None):
         self.vcs, self.repos = vcs, repos
@@ -379,6 +395,38 @@ class LiveIndex:
         #: Scans remembered by commit, so a repository that has not moved is
         #: not read again. None reads everything, every time.
         self.cache = cache
+        self._uses_memo: dict = {}
+        self._population: list[Change] = []
+        self._cfg: Config | None = None
+        self._diffs: dict = {}
+
+    # -- what each repository does with a contract ------------------------------
+
+    def _uses(self, repo: str, ref: str) -> dict:
+        """`{ContractRef: (edge, [paths])}` for one repository. Raises ForgeUnavailable."""
+        key = (repo, ref)
+        if key not in self._uses_memo:
+            if self.cache is not None:
+                self._uses_memo[key] = self.cache.uses(self.vcs, repo, ref)
+            else:
+                from ledger.pipeline.scan import uses_of
+                self._uses_memo[key] = uses_of(discover(
+                    repo, self.vcs.list_tree(repo, ref), None,
+                    read_many=lambda ps: self.vcs.read_files(repo, ref, ps)))
+        return self._uses_memo[key]
+
+    def _use(self, repo: str, ref: str, contract) -> tuple | None:
+        try:
+            uses = self._uses(repo, ref)
+        except ForgeUnavailable:
+            if repo not in self.unreadable:
+                self.unreadable.append(repo)
+            return None
+        hit = uses.get(contract)
+        if hit is None and contract.surface == Surface.HTTP:
+            hit = next((v for c, v in sorted(uses.items(), key=lambda kv: kv[0].name)
+                        if c.surface == Surface.HTTP and http_equivalent(c.name, contract.name)), None)
+        return hit
 
     def decisions(self):
         if self.cache is None:
@@ -396,8 +444,94 @@ class LiveIndex:
         return []
 
     def parties(self, contract, *, exclude: str | None = None) -> list[dict]:
-        """No database, no wiring: literal ownership only."""
-        return []
+        """Who else names `contract`, and which way each faces it, from their call sites.
+
+        Topics and routes. A table is left out: every line naming one reads as
+        a write, so the code does not say who owns it and who only reads.
+        """
+        if contract.surface == Surface.TABLE:
+            return []
+        out = []
+        for other, ref in self.repos.items():
+            if other == exclude:
+                continue
+            hit = self._use(other, ref, contract)
+            if hit is None:
+                continue
+            edge, paths = hit
+            verb = {("http", "publishes"): "serves it", ("http", "consumes"): "calls it",
+                    ("topic", "publishes"): "publishes it",
+                    ("topic", "consumes"): "consumes it"}.get((contract.surface.value, edge),
+                                                              "names it")
+            out.append({"repo": other, "uses": edge,
+                        "how": f"{verb} in `{paths[0]}`" if paths else verb,
+                        "evidence": paths[:2], "branches": [], "about": None})
+        return out
+
+    def field_readers(self, contracts, names, *, exclude: str | None = None) -> dict:
+        """`{contract: {name: [reader]}}`: other repositories whose code reads one
+        of `names` from a contract's payload.
+
+        The live half of the field layer, asked only about the names a change
+        removes. A reader is a repository that consumes the topic or calls the
+        route, in a file that names it, using the name as a field -- a quoted
+        key or an attribute, the same shapes `core.breaks` accepts -- rather
+        than merely containing the word. Literal: a field read through a
+        generated client or another module is not seen.
+        """
+        from ledger.core.breaks import _COMMENT, _structural
+        out: dict = {}
+        names = sorted({n for n in names if n and len(n) >= 3})
+        if not names:
+            return out
+        for c in contracts:
+            if c.surface == Surface.TABLE:
+                continue
+            for other, ref in self.repos.items():
+                if other == exclude:
+                    continue
+                hit = self._use(other, ref, c)
+                if hit is None or hit[0] == Edge.PUBLISHES.value:
+                    continue                    # another writer, not a reader
+                try:
+                    texts = self.vcs.read_files(other, ref, hit[1])
+                except ForgeUnavailable:
+                    continue
+                for name in names:
+                    word = re.compile(rf"(?<!\w){re.escape(name)}\b")
+                    where = next((p for p, text in sorted(texts.items())
+                                  for line in text.splitlines()
+                                  if word.search(line) and not _COMMENT.match(line)
+                                  and _structural(name, line)), None)
+                    if where:
+                        out.setdefault(c, {}).setdefault(name, []).append(
+                            {"repo": other, "direction": "reads", "evidence": where,
+                             "role": f"reads `{name}` in {where}"})
+        return out
+
+    def separate_tables(self, owners: dict, repo: str, ref: str, files) -> dict:
+        """Drop repositories that only share a table's NAME with this one.
+
+        Two repositories that each create the table in their own migrations
+        have two tables. See `core.contracts.own_table`, measured on a real
+        estate: `audit_log` had fourteen definers.
+        """
+        from ledger.core.contracts import own_table
+        out = {}
+        for c, others in owners.items():
+            if c.surface != Surface.TABLE:
+                out[c] = others
+                continue
+            hit = self._use(repo, ref, c)
+            mine = (hit[1] if hit else []) + [f.path for f in files if c.name in (f.body or "")]
+            kept = []
+            for other in others:
+                theirs = self._use(other, self.repos.get(other, ""), c)
+                if not own_table({repo: mine, other: theirs[1] if theirs else []}):
+                    kept.append(other)
+            if kept:
+                out[c] = kept
+        return out
 
     def documented_in(self, contracts) -> dict:
         """No database, no documentation index."""
@@ -419,17 +553,105 @@ class LiveIndex:
         """No database: the caller must enumerate branches itself."""
         return None
 
+    # -- other work in flight, linked without a ticket key ------------------------
+
+    def use_changes(self, changes, cfg: Config | None = None) -> None:
+        """The work in flight this brief may link to, as the caller enumerated it."""
+        self._population = [c for c in changes
+                            if c.kind != "integration" and not NOT_A_CHANGE.match(c.ref)]
+        self._cfg = cfg
+
+    def _others(self, exclude_repo: str | None) -> list[Change]:
+        got = [c for c in self._population if c.repo != exclude_repo]
+        got.sort(key=lambda c: c.updated_at.timestamp() if c.updated_at else 0, reverse=True)
+        return got[:self.LINK_CAP]
+
+    def diff_range(self, repo: str, ref: str, kind: str, sha: str | None) -> tuple[str, str] | None:
+        """What an in-flight change is diffed against, as `(base, head)`."""
+        cfg = self._cfg or Config(org="", project_keys=())
+        return _impact_base(cfg, self.vcs, self.repos, repo, ref, kind, sha)
+
+    def _files(self, c: Change) -> list:
+        from ledger.pipeline.signals import DIFF_LIMIT
+        key = (c.repo, c.ref, c.sha)
+        if key not in self._diffs:
+            files: list = []
+            if self.vcs.supports_diffs:
+                try:
+                    pair = self.diff_range(c.repo, c.ref, c.kind, c.sha)
+                    files = self.vcs.changed_files(c.repo, *pair) if pair else []
+                except ForgeUnavailable:
+                    files = []
+            if sum(len(f.body or "") for f in files) > DIFF_LIMIT:
+                files = []
+            self._diffs[key] = files
+        return self._diffs[key]
+
     def siblings_by_tickets(self, tickets, *, exclude_repo=None):
-        """No database: the caller already has every change it collected."""
-        return []
+        """Changes in flight elsewhere whose branch carries a ticket this diff names."""
+        wanted = {t.upper() for t in tickets}
+        if not wanted:
+            return []
+        from ledger.core.join import Sibling
+        return [Sibling(c, tuple(sorted(wanted & {t.upper() for t in c.tickets})))
+                for c in self._population
+                if c.repo != exclude_repo and wanted & {t.upper() for t in c.tickets}]
 
     def siblings_near(self, *, author, at, ref="", exclude_repo=None):
-        """No database: proximity needs the whole estate's change list."""
-        return []
+        """The same author's work elsewhere, started within `NEAR` of this one."""
+        if not author or at is None:
+            return []
+        from ledger.core.join import Sibling
+        return [Sibling(c, tuple(c.tickets)) for c in self._others(exclude_repo)
+                if (c.author or "").lower() == author.lower() and c.updated_at is not None
+                and abs(c.updated_at.timestamp() - at.timestamp()) <= self.NEAR.total_seconds()]
 
     def siblings_by_signal(self, signals, *, exclude_repo=None):
-        """No database: what every other change touches is not read live."""
-        return []
+        """Changes elsewhere whose diffs share a RARE topic, table or migration with this one.
+
+        Rare among the other changes in flight: two coupled repositories share
+        their whole event vocabulary, and a name every change touches links
+        nothing (see `pipeline.signals`).
+        """
+        if not signals:
+            return []
+        from collections import Counter
+
+        from ledger.core.join import Sibling
+        from ledger.core.overlap import WEIGHT
+        from ledger.pipeline.signals import signals_of
+        others = self._others(None)
+        theirs = {id(c): signals_of(self._files(c)) for c in others}
+        freq = Counter(s for sigs in theirs.values() for s in sigs)
+        out = []
+        for c in others:
+            if c.repo == exclude_repo:
+                continue
+            shared = {s for s in theirs[id(c)] & set(signals) if freq[s] <= self.RARE}
+            if shared:
+                out.append((Sibling(c, tuple(c.tickets)), sum(WEIGHT[s.kind] for s in shared),
+                            sorted(f"{s.kind.value} `{s.value}`" for s in shared)))
+        out.sort(key=lambda t: -t[1])
+        return out
+
+    def siblings_by_contract(self, contracts, *, exclude_repo=None):
+        """Changes elsewhere whose diffs name a topic or route this change touches.
+
+        Tables are left out, for the reason `parties` gives.
+        """
+        from ledger.core.effect import _same, delta_of
+        from ledger.core.join import Sibling
+        wanted = [c for c in contracts if c.surface != Surface.TABLE]
+        if not wanted:
+            return []
+        out = []
+        for c in self._others(exclude_repo):
+            d = delta_of(c.repo, self._files(c))
+            shared = sorted({x.name for x, edges in d.contracts.items()
+                             if edges - {Edge.MENTIONS} and any(_same(x, y) for y in wanted)})
+            if shared:
+                out.append((Sibling(c, tuple(c.tickets)), shared))
+        return out
 
     def topics_bound_in(self, repo: str) -> dict:
         return {}
@@ -444,7 +666,8 @@ class LiveIndex:
         return {}
 
     def field_deps(self, contracts, *, exclude: str | None = None) -> dict:
-        """No database, no field layer. Named rather than silently empty."""
+        """No stored field layer. `field_readers` answers the narrower live
+        question: who reads the names this change removes."""
         return {}
 
     def fields_of(self, contracts, *, exclude: str | None = None) -> dict:
@@ -460,15 +683,10 @@ class LiveIndex:
             if other == exclude:
                 continue
             try:
-                if self.cache is not None:
-                    found = self.cache.get(self.vcs, other, other_ref)[0]
-                else:
-                    found = discover(
-                        other, self.vcs.list_tree(other, other_ref), None,
-                        read_many=lambda ps, r=other, rf=other_ref: self.vcs.read_files(r, rf, ps),
-                    ).contracts()
+                found = set(self._uses(other, other_ref))
             except ForgeUnavailable:
-                self.unreadable.append(other)
+                if other not in self.unreadable:
+                    self.unreadable.append(other)
                 continue
             for c in found & wanted:
                 owners.setdefault(c, []).append(other)
@@ -546,6 +764,8 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                              tickets=tuple(extract_tickets(ref, cfg.project_keys)))
         result = find_siblings(subject, got.changes,
                                partial=got.partial, missing_sources=got.missing_sources)
+        if hasattr(index, "use_changes"):
+            index.use_changes(got.changes, cfg)
 
     decisions, unreadable = index.decisions()
 
@@ -644,9 +864,13 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         # `acme-leads.intake-drafts`... Because of this miss, the review
         # skipped the leads side, where real issues were." Both halves were
         # on one channel and no two of their topic names matched.
+        live = index.source == "live"
+        if live and hasattr(index, "separate_tables"):
+            owners = index.separate_tables(owners, repo, subj.base, files)
         peers = index.channel_peers([c.name for c in touched if c.surface == Surface.TOPIC])
         for c in touched:
-            if c.surface != Surface.TOPIC:
+            # Live, routes too: who serves and who calls is read from the code.
+            if c.surface != Surface.TOPIC and not (live and c.surface == Surface.HTTP):
                 continue
             got = index.parties(c, exclude=repo)
             for p in peers.get(c.name, ()):
@@ -657,7 +881,10 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                             "evidence": [p["evidence"]], "branches": [], "about": None})
             if got:
                 parties[c] = got
-                owners[c] = [p["repo"] for p in got if p["uses"] in ("publishes", "consumes")]
+                directed = [p["repo"] for p in got if p["uses"] in ("publishes", "consumes")]
+                # A live read names every repository that mentions the
+                # contract; the direction adds to that, it does not narrow it.
+                owners[c] = sorted(set(owners.get(c, [])) | set(directed)) if live else directed
 
         # Does this diff delete a field another repo depends on? The one
         # finding here that is evidence rather than inference.
@@ -699,6 +926,17 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
 
         deps = index.field_deps(sorted(candidates, key=lambda c: (c.surface.value, c.name)),
                                 exclude=repo)
+        if not deps and hasattr(index, "field_readers"):
+            # No stored field layer: ask who reads the names this diff removes,
+            # from the contracts the changed FILES name -- a deleted payload
+            # key rarely sits on the line that names its topic.
+            from ledger.core.effect import delta_of
+            named = set(candidates)
+            for path, text in texts.items():
+                named |= {e.contract for e in discover_in_text(repo, path, text)}
+            gone = delta_of(repo, files).keys_removed
+            deps = index.field_readers(sorted(named, key=lambda c: (c.surface.value, c.name)),
+                                       gone, exclude=repo)
         if deps:
             wanted = {c: list(fields) for c, fields in deps.items()}
             for gone in removed_fields(diffs, wanted, file_text=texts):
@@ -719,7 +957,8 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                     resolved=True, base=subj.base,
                     own_commits=None if missing_ref else subj.own_commits,
                     uncommitted=[f.path for f in pending])
-    _link_without_a_ticket_key(b, index, repo, ref, diff_tickets, result, subject_signals)
+    _link_without_a_ticket_key(b, index, repo, ref, diff_tickets, result, subject_signals,
+                               touched=touched)
     yours: dict = {}
     for e in edges:
         yours.setdefault(e.contract, set()).add(e.edge)
@@ -727,6 +966,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         yours.setdefault(c, set()).update(es)
     describe_impacts(b.impacts, cfg, vcs, subj.repos, index, yours=yours,
                      your_files=files, contracts=b.contracts)
+    _escalate_opposite_moves(b)
     # A topic name removed from code may only be a default: if deployment config
     # binds the same identifier to another name, the running topic may not
     # change where that override applies. Say so rather than overstate.
@@ -811,7 +1051,8 @@ def impact_delta(cfg: Config, vcs: VcsAdapter, repos: dict[str, str], index, rep
     if not vcs.supports_diffs or (kind != "integration" and NOT_A_CHANGE.match(ref)):
         return None, None
     try:
-        pair = _impact_base(cfg, vcs, repos, repo, ref, kind, sha)
+        pair = (index.diff_range(repo, ref, kind, sha) if hasattr(index, "diff_range")
+                else _impact_base(cfg, vcs, repos, repo, ref, kind, sha))
         if pair is None:
             return None, None
         base, head = pair
@@ -859,10 +1100,9 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
     """
     from ledger.core.effect import ask_line, delta_of, effect_line, evidence_line, relation_line
 
-    your_keys = set()
-    if your_files:
-        mine = delta_of("", your_files)
-        your_keys = mine.keys_added | mine.keys_removed
+    from ledger.core.effect import Delta, opposite_moves
+    mine = delta_of("", your_files) if your_files else Delta()
+    your_keys = mine.keys_added | mine.keys_removed
     chosen = sorted(impacts, key=lambda i: bool(i.where))[:DESCRIBED]
     # What a model made of each one at sync time, where there is a server
     # that asked. Read, never requested here.
@@ -887,6 +1127,8 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
             known += [f for f in ci.fields if f["repo"] == i.repo]
         i.relation, shared, fields = relation_line(delta, yours, your_keys=your_keys,
                                                    known_fields=known, repo_role=role)
+        i.over = f"{shared.contract.surface.value} `{shared.contract.name}`" if shared else None
+        i.conflict = opposite_moves(delta, mine)
         i.ask = ask_line(i.ref, i.author, shared, fields)
 
 
@@ -898,7 +1140,8 @@ _QUIET = ("proceed", "insufficient_data")
 
 def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
                                diff_tickets: list[str], result,
-                               subject_signals: set | None = None) -> None:
+                               subject_signals: set | None = None, *,
+                               touched=()) -> None:
     """Work in another repository that the branch name could not point at.
 
     The failure this exists for, in the reviewer's words: "brief returned
@@ -929,7 +1172,18 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
     # being briefed is a release, not a change, and its author is whoever last
     # merged into it.
     subject = getattr(result, "subject", None) if result is not None else None
-    own_branch = getattr(subject, "kind", None) == "branch"
+    own_branch = getattr(subject, "kind", None) in ("branch", "pr")
+    # Another change whose diff names a topic or route this one touches: the
+    # strongest link short of a ticket, because it says over what.
+    by_contract = getattr(index, "siblings_by_contract", None)
+    for sib, shared in (by_contract(touched, exclude_repo=repo) if by_contract else ()):
+        c = sib.change
+        if (c.repo, c.ref) in known:
+            continue
+        known.add((c.repo, c.ref))
+        found.append((c, f"its diff also names {', '.join(f'`{n}`' for n in shared[:3])}, which "
+                         "this change touches; no ticket links them"))
+
     for sib in (index.siblings_near(author=getattr(subject, "author", None),
                                     at=getattr(subject, "updated_at", None),
                                     ref=ref, exclude_repo=repo) if own_branch else ()):
@@ -954,6 +1208,12 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
 
     if not found:
         return
+    # Read live, "same author, around the same time" alone is a question, not
+    # a finding: it is listed, and the verdict does not move on it. On a
+    # labelled estate it was the only rule that linked unrelated work -- two
+    # documentation fixes half an hour apart. A stored index weighs it with
+    # everything else it knows about both changes.
+    near_only = index.source == "live" and all(why.startswith("same author") for _, why in found)
     for c, why in found[:4]:
         # Into `impacts` only. Renderers already lift in-flight work into the
         # block of things the repository cannot show, so adding it to
@@ -963,12 +1223,33 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
             shared_tickets=list(c.tickets), where=c.integration_ref, sha=c.sha, how=why))
     # The verdict's own sentence is now false. Left in place it read "no
     # cross-repo work shares this ticket" directly above the cross-repo work.
+    if near_only:
+        b.reasons.append(f"note: {len(found)} change(s) by the same author in other repo(s), "
+                         "started around the same time, are listed below as a question; nothing "
+                         "links them to this one")
+        return
     b.reasons = [r for r in b.reasons if not r.startswith("no cross-repo work shares this ticket")]
     if b.recommendation in _QUIET:
         b.recommendation = Recommendation.REVIEW_WITH.value
         b.confidence = "low"
         b.reasons.insert(0, f"{len(found)} change(s) in other repo(s) are linked to this one by "
                             "something other than the branch name — see below for what")
+
+def _escalate_opposite_moves(b: ImpactBrief) -> None:
+    """Two changes in flight that cannot both land as they are need a decision.
+
+    Not a review: who keeps the contract, and which change lands first, is a
+    choice somebody has to make, and neither repository's tests will make it.
+    """
+    clashes = [i for i in b.impacts if i.conflict]
+    if not clashes:
+        return
+    for i in clashes[:3]:
+        b.reasons.insert(0, f"cannot both land as they are: {i.repo} `{i.ref}` — {i.conflict}")
+    if b.recommendation in ("proceed", "review_with", "insufficient_data"):
+        b.recommendation = Recommendation.DECISION_NEEDED.value
+        b.confidence = "medium"
+
 
 def run_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str, *,
               worktree: bool = False, allow_missing_ref: bool = False,

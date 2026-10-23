@@ -34,7 +34,10 @@ from ledger.pipeline.decisions import load_repo_decisions
 #: What produced a remembered scan, beyond the commit it was read at. A scan
 #: from any other version is read again: remembered must always equal fresh,
 #: and an upgrade is exactly when it would not.
-SCAN_VERSION = f"c{EXTRACTOR_VERSION}.d{PARSER_VERSION}.s1"
+SCAN_VERSION = f"c{EXTRACTOR_VERSION}.d{PARSER_VERSION}.s2"   # s2: which way each contract is used
+
+#: Files kept per contract as evidence of how a repository uses it.
+EVIDENCE_PATHS = 5
 
 
 def scan_repo(vcs: VcsAdapter, repo: str, ref: str):
@@ -43,6 +46,23 @@ def scan_repo(vcs: VcsAdapter, repo: str, ref: str):
     disc = discover(repo, tree, None, read_many=lambda ps: vcs.read_files(repo, ref, ps))
     decisions = load_repo_decisions(vcs, repo, ref, tree=tree)
     return disc, decisions
+
+
+def uses_of(disc) -> dict:
+    """Which way a repository faces each contract it names, and where it says so.
+
+    `{ContractRef: (edge, [paths])}`. One direction per contract, collapsed the
+    way `resolve_direction` does: a repository that publishes a topic and also
+    reads it back in its own tests is a publisher.
+    """
+    from ledger.core.contracts import resolve_direction
+    out: dict = {}
+    for c, edges in disc.by_contract().items():
+        edge = resolve_direction(edges)
+        # Evidence for the direction first: the line that says which way.
+        paths = [e.evidence_path for e in edges if e.edge == edge] + [e.evidence_path for e in edges]
+        out[c] = (edge.value, list(dict.fromkeys(paths))[:EVIDENCE_PATHS])
+    return out
 
 
 def _plain(v):
@@ -96,27 +116,35 @@ class ScanCache:
         Raises ForgeUnavailable exactly as a scan would: an unreadable
         repository is unknown, and nothing remembered may stand in for it.
         """
+        uses, decisions = self._record(vcs, repo, ref)
+        return set(uses), decisions
+
+    def uses(self, vcs: VcsAdapter, repo: str, ref: str) -> dict:
+        """`{ContractRef: (edge, [paths])}`: which way `repo` faces each contract."""
+        return self._record(vcs, repo, ref)[0]
+
+    def _record(self, vcs: VcsAdapter, repo: str, ref: str) -> tuple[dict, list[Decision]]:
         sha = vcs.head_sha(repo, ref)
         f = self._file(repo)
         try:
             raw = json.loads(f.read_text())
             if (raw["repo"], raw["sha"], raw["version"]) == (repo, sha, SCAN_VERSION):
                 self.hits += 1
-                return ({ContractRef(Surface(s), n) for s, n in raw["contracts"]},
+                return ({ContractRef(Surface(s), n): (e, list(ps)) for s, n, e, ps in raw["contracts"]},
                         [_decision_in(d) for d in raw["decisions"]])
         except Exception:                               # noqa: BLE001 -- absent or unreadable: scan
             pass
         self.misses += 1
         disc, decisions = scan_repo(vcs, repo, ref)
-        contracts = disc.contracts()
+        uses = uses_of(disc)
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             tmp = f.with_suffix(f".{os.getpid()}.tmp")
             tmp.write_text(json.dumps({
                 "repo": repo, "sha": sha, "version": SCAN_VERSION,
-                "contracts": sorted([c.surface.value, c.name] for c in contracts),
+                "contracts": sorted([c.surface.value, c.name, e, ps] for c, (e, ps) in uses.items()),
                 "decisions": [_decision_out(d) for d in decisions]}))
             tmp.replace(f)                              # whole file or none: briefs run concurrently
         except Exception:                               # noqa: BLE001 -- not remembered, still answered
             pass
-        return contracts, decisions
+        return uses, decisions

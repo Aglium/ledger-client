@@ -35,7 +35,7 @@ from ledger.adapters.vcs.localgit import LocalGitAdapter
 from ledger.config import Config
 from ledger.core.join import Change, find_siblings
 from ledger.core.tickets import extract_tickets
-from ledger.pipeline.scan import ScanCache, scan_repo
+from ledger.pipeline.scan import ScanCache, scan_repo, uses_of
 from ledger.pipeline.signals import NOT_A_CHANGE
 
 #: GitHub and Bitbucket word their merge commits differently; both name the branch.
@@ -73,6 +73,8 @@ class Merged:
     #: A squash merge keeps no branch, so the day its work started is unknown:
     #: it is taken as the day it merged, which can only miss in-flight work.
     started_known: bool = True
+    #: When its first commit was written, to the second (ISO 8601).
+    started_at: str = ""
 
     @property
     def id(self) -> str:
@@ -107,11 +109,13 @@ class Case:
             return None
         b = self.brief
         if (b.get("contract_breaks") or b.get("field_breaks")
+                or any(i.get("conflict") for i in b.get("impacts", []))
                 or any(d.get("gate_hit") for d in b.get("decisions", []))):
             return "conflict"
         directed = any(p.get("uses") in ("publishes", "consumes")
-                       for c in b.get("contracts", []) for p in c.get("parties", []))
-        if directed or any(i.get("relation") for i in b.get("impacts", [])):
+                       for c in b.get("contracts", []) if c.get("also_touched_by")
+                       for p in c.get("parties", []))
+        if directed or any(i.get("over") for i in b.get("impacts", [])):
             return "dependency"
         return "correlation"
 
@@ -214,12 +218,12 @@ def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[M
     out: list[Merged] = []
     seen = RepoHistory(repo)
     raw = _git(path, "log", "--first-parent", f"--since={since.isoformat()}",
-               "--date=short", "--format=%ad%x09%cd%x09%H%x09%P%x09%s", ref)
+               "--date=short", "--format=%ad%x09%cd%x09%H%x09%P%x09%aI%x09%s", ref)
     for line in raw.splitlines():
-        parts = line.split("\t", 4)
-        if len(parts) != 5:
+        parts = line.split("\t", 5)
+        if len(parts) != 6:
             continue
-        authored, committed, sha, parents, subject = parts
+        authored, committed, sha, parents, authored_at, subject = parts
         parent = parents.split()
         merged_at = datetime.strptime(committed, "%Y-%m-%d").date()
         if len(parent) == 2:
@@ -229,7 +233,7 @@ def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[M
                 continue
             base_sha, head_sha = parent
             # The first commit the branch added, and who wrote the last one.
-            first = _git(path, "log", "--reverse", "--date=short", "--format=%ad",
+            first = _git(path, "log", "--reverse", "--format=%aI",
                          f"{base_sha}..{head_sha}").splitlines()
             who = _git(path, "log", "-1", "--format=%ae", head_sha).strip()
             branch = m.group("ref")
@@ -238,9 +242,9 @@ def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[M
             seen.merges += 1
             out.append(Merged(
                 repo, branch, tuple(extract_tickets(branch, keys)),
-                datetime.strptime(first[0], "%Y-%m-%d").date() if first else merged_at, merged_at,
+                datetime.fromisoformat(first[0]).date() if first else merged_at, merged_at,
                 int(m.group("pr")) if m.groupdict().get("pr") else None, who, base_sha, head_sha,
-                kind="merge", title=subject))
+                kind="merge", title=subject, started_at=first[0] if first else ""))
             continue
         if len(parent) != 1:
             continue
@@ -259,7 +263,8 @@ def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[M
         out.append(Merged(
             repo, branch, tuple(extract_tickets(f"{branch} {subject}", keys)),
             min(started, merged_at), merged_at, pr, who, parent[0], sha,
-            kind="squash", title=subject, started_known=started < merged_at))
+            kind="squash", title=subject, started_known=started < merged_at,
+            started_at=authored_at))
     return out, seen
 
 
@@ -313,7 +318,7 @@ class _Memo(ScanCache):
         self.misses = 0
         self._seen: dict = {}
 
-    def get(self, vcs, repo, ref):
+    def _record(self, vcs, repo, ref):
         sha = vcs.head_sha(repo, ref)
         key = (repo, sha)
         if key in self._seen:
@@ -321,24 +326,51 @@ class _Memo(ScanCache):
             return self._seen[key]
         self.misses += 1
         disc, decisions = scan_repo(vcs, repo, ref)
-        self._seen[key] = (disc.contracts(), decisions)
+        self._seen[key] = (uses_of(disc), decisions)
         return self._seen[key]
 
 
 class _AsItWas(service.LiveIndex):
-    """The live index, with the in-flight work of one past day."""
+    """The live index, with the in-flight work of one past day.
 
-    def __init__(self, vcs, repos, cache, result):
+    Each change in flight is read as it stood that day: from the commit it
+    was merged onto to the last commit it had by the end of the day. A
+    commit its author wrote later is not part of what could have been seen.
+    """
+
+    def __init__(self, vcs, repos, cache, result, population=(), ranges=None, cfg=None,
+                 diffs=None):
         super().__init__(vcs, repos, cache)
         self._result = result
+        self.use_changes(list(population), cfg)
+        self._ranges = ranges or {}
+        if diffs is not None:
+            self._diffs = diffs         # a past commit's diff never changes: share it
 
     def inflight(self, repo, ref, tickets):
         return self._result
 
+    def diff_range(self, repo, ref, kind, sha):
+        return self._ranges.get((repo, ref))
+
 
 def _live(vcs):
-    cache = _Memo()
-    return lambda repos, result: _AsItWas(vcs, repos, cache, result)
+    cache, diffs = _Memo(), {}
+    return lambda repos, result, **kw: _AsItWas(vcs, repos, cache, result, diffs=diffs, **kw)
+
+
+def _head_on(vcs, m: Merged, day: date, memo: dict) -> str | None:
+    """The last commit `m`'s branch had by the end of `day`, or None before its first."""
+    key = (m.repo, m.head_sha, day)
+    if key not in memo:
+        until = (day + timedelta(days=1)).isoformat()
+        try:
+            p = vcs._path(m.repo)
+            memo[key] = _git(p, "rev-list", "-1", f"--before={until} 00:00",
+                             f"{m.base_sha}..{m.head_sha}").strip() or None
+        except ForgeUnavailable:
+            memo[key] = None
+    return memo[key]
 
 
 def me(path: Path) -> str | None:
@@ -468,18 +500,29 @@ def run(cfg: Config, vcs: LocalGitAdapter, *, since: date, author: str | None,
     memo: dict = {}
     thin = len(out.readable) < 2
 
-    def open_on(day: date) -> list[Change]:
-        return [Change(repo=m.repo, ref=m.ref, tickets=m.tickets, kind="pr", pr_number=m.pr,
-                       author=m.author) for m in every if m.started <= day <= m.merged]
+    heads_on: dict = {}
+
+    def as_change(m: Merged, day: date) -> Change:
+        head = _head_on(vcs, m, day, heads_on) if as_it_was else None
+        return Change(repo=m.repo, ref=m.ref, tickets=m.tickets, kind="pr", pr_number=m.pr,
+                      author=m.author, sha=head,
+                      updated_at=datetime.fromisoformat(m.started_at) if m.started_at else None)
+
+    def open_on(day: date) -> list[tuple[Merged, Change]]:
+        return [(o, as_change(o, day)) for o in every if o.started <= day <= o.merged]
 
     for i, m in enumerate(mine):
         if progress:
             progress(i + 1, len(mine), m)
-        population = open_on(m.started)
+        pairs = open_on(m.started)
+        population = [c for _, c in pairs]
         subject = next((c for c in population if c.repo == m.repo and c.ref == m.ref),
                        Change(repo=m.repo, ref=m.ref, tickets=m.tickets, kind="pr",
                               pr_number=m.pr, author=m.author))
         result = find_siblings(subject, population)
+        # Each other change as it stood that day; one with no commit yet is not readable.
+        ranges = {(o.repo, o.ref): (o.base_sha, c.sha) for o, c in pairs if c.sha}
+        others = [c for c in population if c is not subject and c.sha]
         case = Case(m, as_of=m.started, thin=thin)
         if as_it_was:
             then, case.not_yet = as_of(vcs, {r: d for r, d in repos.items() if r != m.repo},
@@ -490,9 +533,13 @@ def run(cfg: Config, vcs: LocalGitAdapter, *, since: date, author: str | None,
         case.checked = sorted(r for r in scope if r != m.repo)
         try:
             own = vcs.commits_ahead(m.repo, m.base_sha, m.head_sha)
+            if as_it_was:
+                opener = (lambda r, result=result, others=others, ranges=ranges:
+                          open_index(r, result, population=others, ranges=ranges, cfg=cfg))
+            else:
+                opener = lambda r, result=result: open_index(r, result)
             b = service.compute_brief(
-                cfg, [vcs], m.repo, m.head_sha,
-                lambda r, result=result: open_index(r, result),
+                cfg, [vcs], m.repo, m.head_sha, opener,
                 subject=service.Subject(scope, m.base_sha, own))
             d = b.to_dict()
             d["subject"]["ref"] = m.ref
@@ -603,12 +650,15 @@ def render(r: Replay) -> str:
          "not used." if hindsight else
          "- Which repositories share a contract, and which decisions exist, are read from the "
          "organisation index as it is today, not as it was that day."),
-        "- In-flight work is reconstructed from merge history, so it is linked by the ticket key "
-        "in a branch name or pull request title. Rebased changes leave no trace and are not "
-        "replayed or counted as in flight. A squash merge keeps no branch, so its start day is "
-        "taken as the day it merged.",
-        ("- This is a live read, without an organisation index: no declared topic wiring, no "
-         "field-level contracts, no documentation links." if hindsight else
+        "- In-flight work is reconstructed from merge history, each change read as it stood "
+        "that day. It is linked by a ticket key in a branch name, pull request title or diff; by "
+        "a topic or route both diffs name; by a rare topic, table or migration both touch; and, "
+        "as a question that never moves a verdict, by the same author starting work around the "
+        "same time. Rebased changes leave no trace and are not replayed or counted as in flight. "
+        "A squash merge keeps no branch, so its start day is taken as the day it merged.",
+        ("- This is a live read, without an organisation index: directions and the fields "
+         "another repository reads come from its code, literally; no declared topic wiring, no "
+         "documentation links." if hindsight else
          "- Topic wiring, field-level contracts and documentation links are today's too."),
         "- It is an upper bound on usefulness. It says how often there was something to say.",
         f"- Took {r.seconds:.0f} s." if r.seconds else "",
@@ -681,17 +731,54 @@ def render(r: Replay) -> str:
     return "\n".join(lines)
 
 
+def link_kind(how: str | None) -> str:
+    """Which rule linked an in-flight item: ticket, ticket_in_diff, contract, signal or author."""
+    if not how:
+        return "ticket"
+    for prefix, kind in (("its diff also names", "contract"), ("both change", "signal"),
+                         ("same author", "author")):
+        if how.startswith(prefix):
+            return kind
+    return "ticket_in_diff" if "which this diff names" in how else "other"
+
+
+def metrics(r: Replay) -> dict:
+    """The measured half of a replay, as numbers: what was found, and how."""
+    ctx = r.with_context
+    links: dict[str, int] = {}
+    for c in r.briefed:
+        for i in c.brief.get("impacts", []):
+            k = link_kind(i.get("how"))
+            links[k] = links.get(k, 0) + 1
+    return {
+        "replayed": len(r.briefed), "with_context": len(ctx), "clear": len(r.clear),
+        "coverage": len(r.uncovered), "errors": sum(1 for c in r.cases if c.error),
+        "by_strength": {s: sum(c.strength == s for c in ctx)
+                        for s in ("conflict", "dependency", "correlation")},
+        "by_recommendation": {v: sum(c.brief["recommendation"] == v for c in r.briefed)
+                              for v in ("decision_needed", "review_with", "insufficient_data",
+                                        "proceed")},
+        "linked_in_flight": links,
+        "field_breaks": sum(len(c.brief.get("field_breaks", [])) for c in r.briefed),
+        "contract_breaks": sum(len(c.brief.get("contract_breaks", [])) for c in r.briefed),
+        "cannot_both_land": sum(1 for c in r.briefed for i in c.brief.get("impacts", [])
+                                if i.get("conflict")),
+        "seconds": round(r.seconds, 1),
+    }
+
+
 def cases_json(r: Replay) -> dict:
     """The cases, without any code: what `feedback` needs to file an answer by its id."""
     return {
         "since": r.since.isoformat(), "author": r.author, "source": r.source,
         "seconds": round(r.seconds, 1),
-        "repos_read": len(r.readable), "gaps": r.gaps(),
+        "repos_read": len(r.readable), "gaps": r.gaps(), "metrics": metrics(r),
         "cases": [{
             "id": c.change.id, "repo": c.change.repo, "ref": c.change.ref,
             "sha": c.change.head_sha, "merged": c.change.merged.isoformat(),
             "recommendation": c.brief["recommendation"] if c.brief else None,
             "outcome": c.outcome, "strength": c.strength,
+            "links": sorted({link_kind(i.get("how")) for i in (c.brief or {}).get("impacts", [])}),
         } for c in r.cases],
     }
 

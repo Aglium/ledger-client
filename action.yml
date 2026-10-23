@@ -1,7 +1,10 @@
-name: "Ledger — cross-repo siblings"
+name: "Ledger — what this change affects elsewhere"
 description: >
-  Comment on a pull request naming in-flight work in OTHER repos that shares its
-  ticket. Stateless: queries the forges directly, needs no database or service.
+  Comment on a pull request with what it affects in OTHER repositories: fields or
+  contracts it removes that another repository reads, changes in flight that cannot
+  land with it, who is on the other side of each topic or route, and other work
+  linked by ticket, by what it touches or by author. Works without a ticket key.
+  Stateless: queries the forges directly, needs no database or service.
 inputs:
   github-token:
     description: "Token with read access to the org's repos and write access to PR comments."
@@ -13,6 +16,10 @@ inputs:
     description: "Post the comment. Set to 'false' to render it into the log only."
     required: false
     default: "true"
+  mode:
+    description: "'brief' (default): the full brief. 'siblings': only work sharing the ticket, as before."
+    required: false
+    default: "brief"
 runs:
   using: composite
   steps:
@@ -26,6 +33,14 @@ runs:
       # needs to check itself out -- which also means no org or repo name is
       # hardcoded here. Whoever hosts the action, it installs from itself.
       run: pip install -e "${{ github.action_path }}"
+    - name: Remember scans between runs
+      # What each repository's default branch says is read again only when
+      # that branch moves. Names and directions only; no code is cached.
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ledger/scan
+        key: ledger-scan-${{ github.run_id }}
+        restore-keys: ledger-scan-
     - name: Comment
       shell: bash
       env:
@@ -43,5 +58,6 @@ runs:
           --head-sha "$HEAD_SHA" \
           --config "${{ github.workspace }}/${{ inputs.config }}" \
           --live \
+          $([ "${{ inputs.mode }}" = "siblings" ] && echo "--siblings-only" || echo "--brief") \
           $([ "${{ inputs.post }}" = "true" ] && echo "--post" || echo "--dry-run") \
-          || echo "::warning::ledger could not produce a sibling comment; continuing"
+          || echo "::warning::ledger could not produce a comment; continuing"

@@ -389,3 +389,54 @@ def ask_line(ref: str, author: str | None, shared: Shared | None, fields: list[s
         return (f"What does `{ref}` expect to receive on {name} — does this change send it, "
                 "in that form, and deploy before it?" + who)
     return (f"Both changes touch {name}: are they compatible, and which must land first?" + who)
+
+
+def _same(a: ContractRef, b: ContractRef) -> bool:
+    return a.surface == b.surface and (
+        a.name == b.name or (a.surface == Surface.HTTP and http_equivalent(a.name, b.name)))
+
+
+def _taken_away(removed: dict[ContractRef, set[Edge]],
+                relying: dict[ContractRef, set[Edge]]) -> ContractRef | None:
+    """A contract one side stops providing while the other side reads it.
+
+    Providing is publishing a topic or serving a route; reading is consuming
+    or calling it. Tables are left out: every line naming a table reads as a
+    write, so a direction cannot be told apart from a mention.
+    """
+    for c, edges in sorted(removed.items(), key=lambda kv: (kv[0].surface.value, kv[0].name)):
+        if c.surface == Surface.TABLE or _edge_of(edges) != Edge.PUBLISHES:
+            continue
+        for d, theirs in relying.items():
+            if _same(c, d) and _edge_of(theirs) == Edge.CONSUMES:
+                return c
+    return None
+
+
+def opposite_moves(theirs: Delta, mine: Delta) -> str | None:
+    """Two changes in flight that cannot both land as they are.
+
+    One stops publishing a topic or serving a route; the other, at the same
+    time, starts or keeps consuming or calling it. Either alone is fine. Both
+    together break whoever lands second, and nothing in either repository's
+    tests will say so. This is the difference between "these two changes are
+    related" and "these two changes need a decision": who keeps the contract,
+    and which lands first.
+
+    Returns the sentence, or None. Names and directions only.
+    """
+    def kind(c: ContractRef) -> str:
+        return {Surface.TOPIC: "topic", Surface.HTTP: "route"}.get(c.surface, c.surface.value)
+
+    mine_using = {**mine.changed, **mine.added}
+    c = _taken_away(theirs.removed, mine_using)
+    if c is not None:
+        return (f"it REMOVES {kind(c)} `{c.name}`, which this change "
+                + ("starts using" if c in mine.added or any(_same(c, d) for d in mine.added)
+                   else "still uses"))
+    theirs_using = {**theirs.changed, **theirs.added}
+    c = _taken_away(mine.removed, theirs_using)
+    if c is not None:
+        return (f"this change REMOVES {kind(c)} `{c.name}`, which it "
+                + ("starts using" if any(_same(c, d) for d in theirs.added) else "still uses"))
+    return None

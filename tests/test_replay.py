@@ -209,7 +209,7 @@ class TestStrength:
                               "contract_breaks": [{"name": "order_line"}]})
         assert c.strength == "conflict"
         c = rp.Case(m, brief={"recommendation": "review_with", "index": {}, "contracts": [
-            {"parties": [{"repo": "billing", "uses": "consumes"}]}]})
+            {"also_touched_by": ["billing"], "parties": [{"repo": "billing", "uses": "consumes"}]}]})
         assert c.strength == "dependency"
 
 

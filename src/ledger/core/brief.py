@@ -144,6 +144,12 @@ class Impact:
     #: apart from `effect`, labelled wherever it is shown, and is a lead to
     #: verify rather than a fact. None without a server, a model or a summary.
     behaviour: dict | None = None
+    #: The contract both diffs name, when they share one: what `relation`
+    #: rests on. None when the two are linked by something else.
+    over: str | None = None
+    #: When the two changes cannot both land as they are -- one removes what
+    #: the other uses -- the sentence that says so. See `effect.opposite_moves`.
+    conflict: str | None = None
 
 
 @dataclass

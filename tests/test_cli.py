@@ -63,10 +63,16 @@ class TestCommentLive:
                           ["comment", LEADS, "12", "--ref", "feat/abc-321-export", "--live", "--post"])
         assert len(fake_forge.comments) == 1
 
-    def test_silent_when_branch_has_no_ticket(self, fake_forge):
+    def test_a_branch_with_no_ticket_is_briefed_and_silent_when_nothing_is_found(self, fake_forge):
         r = runner.invoke(cli_mod.app, ["comment", LEADS, "12", "--ref", "feat/config-menu", "--live"])
         assert r.exit_code == 0
-        assert "nothing to join on" in r.output
+        assert "nothing to join on" not in r.output and "no comment" in r.output
+        assert not fake_forge.comments
+
+    def test_siblings_only_still_needs_a_ticket(self, fake_forge):
+        r = runner.invoke(cli_mod.app, ["comment", LEADS, "12", "--ref", "feat/config-menu",
+                                        "--siblings-only"])
+        assert r.exit_code == 0 and "nothing to join on" in r.output
         assert not fake_forge.comments
 
     def test_silent_when_ticket_has_no_siblings(self, fake_forge):
@@ -170,3 +176,32 @@ class TestSubjectGuard:
         import json
         subject = json.loads(r.output)["subject"]
         assert subject["resolved"] is True and subject["own_commits"] == 0
+
+
+class TestCommentBriefsWithoutATicket:
+    """The Action used to stop at "no ticket key -- nothing to join on". A
+    quarter of live branches on a real estate carry none."""
+
+    def test_it_names_the_consumer_that_loses_a_field(self, monkeypatch):
+        from ledger.adapters.vcs.base import ChangedFile
+        a = FakeAdapter(
+            repos=[RepoRef(full_name="orders", default_branch="main", host="github.com"),
+                   RepoRef(full_name="mailer", default_branch="main", host="github.com")],
+            branches={"orders": [BranchRef(repo="orders", name="main", head_sha="1" * 40),
+                                 BranchRef(repo="orders", name="drop-discount", head_sha="2" * 40)],
+                      "mailer": [BranchRef(repo="mailer", name="main", head_sha="3" * 40)]},
+            ahead={("orders", "main", "drop-discount"): 1},
+            diffs={"orders": [ChangedFile(path="app/events.py",
+                                          body='-    "discount_code": order.discount,')]},
+            tree={"orders": {"app/events.py": 'producer.send("order.placed.v1", {\n'
+                                              '    "order_id": order.id,\n})\n'},
+                  "mailer": {"app/on_order.py": '@consumer.subscribe("order.placed.v1")\n'
+                                                'def on(payload):\n'
+                                                '    send(payload["discount_code"])\n'}})
+        monkeypatch.setattr(cli_mod, "_adapters", lambda cfg, local_root: [a])
+        monkeypatch.setenv("LEDGER_CACHE_DIR", "off")
+        r = runner.invoke(cli_mod.app, ["comment", "orders", "7", "--ref", "drop-discount", "--post"])
+        assert r.exit_code == 0, r.output
+        body = next(iter(a.comments.values()))
+        assert "needs a decision" in body
+        assert "removes `discount_code` from topic `order.placed.v1`; read by `mailer` (app/on_order.py)" in body

@@ -15,6 +15,7 @@ from ledger.core.join import find_siblings
 from ledger.core.render import render_siblings
 from ledger.core.tickets import extract_tickets
 from ledger.pipeline.collect import collect
+from ledger.pipeline.scan import ScanCache
 
 from ledger import service
 from ledger.service import LedgerError
@@ -629,18 +630,22 @@ def benchmark(
 
 def post_comment(cfg: Config, repo: str, pr_number: int, result, *, dry_run: bool,
                  local_root: str | None, head_sha: str | None, brief=None) -> None:
-    """The check run and the sticky comment for one PR, from a join result.
+    """The check run and the sticky comment for one PR.
 
-    `brief` is the change's impact brief, when the caller wants the check to
-    be a gate: it fails only on a verdict the config enforces.
+    With a `brief`, the comment is the brief's: what this change affects in
+    other repositories, linked by anything, not only a shared ticket. Without
+    one it names the other changes on the same ticket. The check fails only on
+    a verdict the config enforces.
     """
     from ledger.core.gate import blocks
+    from ledger.core.render import render_brief_comment
 
     enforced = None
     if brief is not None and blocks(brief.recommendation, cfg.enforce):
         enforced = (brief.recommendation, list(brief.reasons))
     verdict = decide(result, enforced=enforced)
-    body = render_siblings(result, marker=cfg.comment_marker)
+    body = (render_brief_comment(brief.to_dict(), marker=cfg.comment_marker) if brief is not None
+            else render_siblings(result, marker=cfg.comment_marker))
 
     if dry_run:
         typer.echo(f"check: {verdict.conclusion.value} — {verdict.title}")
@@ -704,33 +709,55 @@ def comment(
     live: bool = typer.Option(True, "--live", hidden=True, help="Kept for existing workflows; always live here"),
     local_root: str = typer.Option(None, "--local-root", help="Read local clones instead of APIs"),
     head_sha: str = typer.Option(None, "--head-sha", help="Commit to attach the check run to"),
+    full: bool = typer.Option(True, "--brief/--siblings-only",
+                              help="The full brief (default), or only work sharing the ticket"),
 ):
-    """Render (and optionally post) the sticky sibling comment for one PR.
+    """Render (and optionally post) the sticky Ledger comment for one PR.
 
     Stateless, for CI. One PR's answer needs no database -- just the forges.
     That keeps the Action a single step with no infrastructure behind it, which
     is the difference between "adoptable this week" and "adoptable once someone
     stands up a service".
+
+    By default the comment is the full brief: removed fields and contracts
+    other repositories read, changes in flight that cannot land with this one,
+    who is on the other side of each topic or route, and other work linked by
+    ticket, by what it touches or by author. A branch with no ticket key is
+    briefed like any other. If the brief cannot be computed, it falls back to
+    the ticket join and says so.
     """
+    from ledger.core.join import Change
+
     cfg = _load_config(config)
     if not ref:
         typer.secho("--ref is required until PR-number lookup lands", fg="yellow")
         raise typer.Exit(1)
-    got = collect(_adapters(cfg, local_root), cfg.project_keys, liveness_days=cfg.liveness_days,
+    adapters = _adapters(cfg, local_root)
+    got = collect(adapters, cfg.project_keys, liveness_days=cfg.liveness_days,
                   integration_branches=cfg.integration_branches,
                   exclude_repos=cfg.exclude_repos)
     subject = next((c for c in got.changes if c.repo == repo and c.ref == ref), None)
     if subject is None:
-        from ledger.core.join import Change
-        tickets = tuple(extract_tickets(ref, cfg.project_keys))
-        if not tickets:
-            typer.echo(f"no ticket key in {ref!r} — nothing to join on")
-            raise typer.Exit(0)
-        subject = Change(repo=repo, ref=ref, tickets=tickets, kind="pr", pr_number=pr_number)
+        subject = Change(repo=repo, ref=ref, tickets=tuple(extract_tickets(ref, cfg.project_keys)),
+                         kind="pr", pr_number=pr_number)
+    if not full and not subject.tickets:
+        typer.echo(f"no ticket key in {ref!r} — nothing to join on (run without --siblings-only "
+                   "to brief it anyway)")
+        raise typer.Exit(0)
     result = find_siblings(subject, got.changes, partial=got.partial,
                            missing_sources=got.missing_sources)
+    b = None
+    if full:
+        try:
+            vcs = service.tree_reader(adapters)
+            b = service.compute_brief(cfg, adapters, repo, ref,
+                                      lambda repos: service.LiveIndex(vcs, repos, ScanCache.default()),
+                                      collected=got)
+        except Exception as e:  # noqa: BLE001 -- advisory: fall back to the ticket join, say why
+            typer.secho(f"could not brief {repo} {ref} ({type(e).__name__}: {e}); "
+                        "falling back to work sharing its ticket", fg="yellow", err=True)
     post_comment(cfg, repo, pr_number, result, dry_run=dry_run, local_root=local_root,
-                 head_sha=head_sha)
+                 head_sha=head_sha, brief=b)
 
 
 @app.command("mcp")
