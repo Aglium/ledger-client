@@ -685,8 +685,9 @@ def session_context(b: dict) -> str:
                 "before changing a topic, endpoint or table.")
     return (summarise(b)
             + f"\n\nThis is cross-repo context from the ledger{event}, computed at session start. "
-              "Mention it when it bears on the work. If the user reacts to it (useful, noise, "
-              "wrong, or something it missed), record that with the ledger `feedback` tool.\n"
+              "Mention it when it bears on the work. If the user reacts to it (useful, already "
+              "known, false positive, can't verify, or something it missed), record that with "
+              "the ledger `feedback` tool.\n"
             + _TOOLS)
 
 

@@ -6,15 +6,20 @@
 #   LEDGER_BIN       an explicit path to the `aglium-ledger` executable
 #   (PATH)           `aglium-ledger`, however it was installed
 #   (uvx)            otherwise fetched and run with `uvx`, from LEDGER_PACKAGE
-#                    if set (a wheel, a path, a git URL) or from the package
-#                    index under its published name
+#                    if set (a wheel, a path, a git URL), or else from this
+#                    plugin's own release, pinned below, with the `mcp` extra
+#                    the MCP server needs
 #
 # Optional, read by the client itself:
 #   LEDGER_CONFIG    a config file; otherwise the one `aglium-ledger init` wrote
 #   LEDGER_URL       your organisation's Ledger server, when there is one
 #   LEDGER_API_TOKEN its read token
 
-PACKAGE=${LEDGER_PACKAGE:-aglium-ledger}
+# The client release this plugin was built with. Kept equal to plugin.json and
+# the package version by the tests. Fetched from the tagged source until the
+# package is on the Python package index.
+LEDGER_VERSION=0.1.0
+PACKAGE=${LEDGER_PACKAGE:-"aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v${LEDGER_VERSION}"}
 
 find_ledger() {
   if [ -n "${LEDGER_BIN:-}" ] && [ -x "$LEDGER_BIN" ]; then
@@ -56,8 +61,10 @@ push-hook)
   ;;
 *)
   run "$@"
-  echo "aglium-ledger is not installed, and uvx is not here to fetch it. Install it" >&2
-  echo "(pipx install aglium-ledger, or uv tool install aglium-ledger), or set LEDGER_BIN." >&2
+  echo "aglium-ledger is not installed, and uvx is not here to fetch it." >&2
+  echo "Install uv (https://docs.astral.sh/uv/) and start a new session, or install the client:" >&2
+  echo "  uv tool install '$PACKAGE'" >&2
+  echo "or set LEDGER_BIN to an aglium-ledger executable." >&2
   exit 127
   ;;
 esac

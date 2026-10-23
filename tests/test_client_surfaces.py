@@ -79,11 +79,15 @@ class TestLiveBackend:
         with pytest.raises(LedgerError):
             backend.decisions_for(None, None, None)
 
-    def test_feedback_says_there_is_nowhere_to_keep_it(self, backend):
-        got = backend.feedback("useful", "found the other writer", None, None, None, None)
-        assert got["kept"] is False and "organisation server" in got["note"]
-        # Nothing is counted or sent anywhere: the client has no usage reporting.
+    def test_feedback_is_kept_on_this_machine_and_sent_nowhere(self, backend):
+        from ledger import feedback as fb
+        got = backend.feedback("already known", "found the other writer", None, "orders",
+                               "feat/x", "brief")
+        assert got["kept"] is True and got["verdict"] == "known"
+        assert "nothing was sent" in got["note"]
         assert "counted_anonymously" not in got
+        [row] = fb.rows()
+        assert (row["verdict"], row["repo"], row["source"]) == ("known", "orders", "mcp:brief")
 
     def test_a_verdict_that_is_not_one_is_refused(self, backend):
         with pytest.raises(LedgerError, match="verdict"):

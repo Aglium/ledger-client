@@ -1,48 +1,70 @@
-# aglium-ledger
+# Aglium Ledger client
 
-What does this change affect in the repositories you are not looking at, and does someone need
-to decide something before it merges?
+**Your coding agent sees your repository. Ledger sees what your changes might affect elsewhere.**
 
-`aglium-ledger` is the Ledger client. It reads your organisation's repositories on your own
-machine and answers that question for a branch: a recommendation, the reasons, and who to
-involve. It needs no database and no service. It returns names, contracts, decisions and paths
-as evidence, never file contents.
+Claude Code can work on the repository in front of it. The change often reaches further: another
+team's branch on the same ticket, a service that reads the table you are changing, a design
+decision whose open question this change quietly answers. Ledger reads the rest of your
+organisation's repositories on your own machine and answers, for a branch: a recommendation,
+the evidence behind it, and the people or decisions to involve.
 
-## Install
+Source-available · No Aglium account · No model calls by the client · Nothing sent to Aglium
 
-Python 3.12 or later.
+## Would it have warned you? Replay your last merges
 
-```bash
-uv tool install 'aglium-ledger[mcp]'      # or: pipx install 'aglium-ledger[mcp]'
+The quickest way to find out whether Ledger is useful to you is to run it on changes your team
+already merged, as they were on the day each one started.
+
+In Claude Code:
+
+```text
+/plugin marketplace add Aglium/ledger-client
+/plugin install ledger@aglium
+/ledger:setup       # writes a config, checks prerequisites, says which repositories Ledger can see
+/ledger:replay      # your merged changes from the last 90 days; --everyone for your team's
 ```
 
-The `mcp` extra is only needed for the MCP server (`aglium-ledger mcp`).
-
-## Start
-
-From a checkout of one of your organisation's repositories:
+From a terminal (Python 3.12+ and [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-aglium-ledger init        # writes ~/.config/ledger/ledger.yml from this checkout; contacts nothing
-aglium-ledger mirrors     # optional: the rest of the organisation, as bare mirrors
-aglium-ledger brief <repo> <branch>
+uv tool install 'aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v0.1.0'
+cd ~/src/your-org/one-of-your-repos
+aglium-ledger init          # a config from this checkout; contacts nothing
+aglium-ledger mirrors       # optional: the rest of the organisation, as bare mirrors
+aglium-ledger coverage      # which repositories Ledger can see, and the gaps
+aglium-ledger replay --everyone
 ```
 
-`init` reads the origin remote for the forge and the organisation, branch names and commit
-subjects for the ticket keys your team uses, and the directory the checkout sits in. What it
-cannot derive it leaves out and says so. Without mirrors, point it at clones you already have
-with `--local-root ~/src/your-org`.
+The replay writes `ledger-replay.md`. For each change it keeps three outcomes apart:
+
+- **something to say**: other work or contracts this change affected, each with links to the
+  commits and files you can open to check it, and how strong the claim is (a *conflict*, a
+  *dependency* over a named contract, or a *correlation* such as a shared ticket);
+- **nothing found**, by a replay that could see enough to say so;
+- **could not see enough to tell**, which is never the same as safe.
+
+There is no hindsight in it: every other repository is read at the commit its default branch
+had on the day the change started, so nothing merged later can make a finding look smarter
+than it was. More in [docs/replay.md](docs/replay.md).
+
+You then say, for each finding, whether it was **useful**, **already known**, a **false
+positive**, or something you **can't verify**. The answers stay on your machine
+(`aglium-ledger feedback import ledger-replay.md`). If you want to share the result,
+`aglium-ledger feedback summary --share` writes a file with the verdicts and hashed names, no
+code, for you to read and send.
 
 ## The recommendation
 
 | Verdict | Meaning |
 |---|---|
-| `proceed` | Nothing found elsewhere |
+| `proceed` | Nothing found in what Ledger could see |
 | `review_with` | Other work overlaps: name these repositories, branches and people in your review |
 | `decision_needed` | An open decision governs this change; a person with authority decides first |
 | `insufficient_data` | Ledger could not see enough. Unknown, never safe |
 
-`brief --json` gives the same answer for a CI gate or an agent.
+`aglium-ledger brief <repo> <branch>` gives it for any branch; `--json` for a CI gate or an
+agent. Every answer names the repositories it read, so a quiet answer from a small estate is
+not mistaken for a clean one.
 
 ## Commands
 
@@ -50,27 +72,33 @@ with `--local-root ~/src/your-org`.
 |---|---|
 | `init` | Write a config from the current checkout |
 | `mirrors` | Discover the organisation's repositories and keep bare mirrors of them |
-| `brief <repo> <ref>` | What a branch affects elsewhere |
-| `explain <repo> <ref>` | The evidence behind a brief |
-| `scan` | What the estate holds: repositories, contracts, work in flight |
+| `coverage` | Which repositories Ledger can see, their history, the gaps, and the prerequisites |
 | `replay` | Brief your recent merged changes as they were, to see whether Ledger would have helped |
-| `comment` | Post a brief on a pull request (used by the GitHub Action) |
+| `feedback record / import / summary` | Your verdicts on findings, kept locally |
+| `brief <repo> <ref>` | What a branch affects elsewhere |
+| `explain <repo> <ref>` | Other in-flight work on a branch's ticket |
+| `scan` | What the estate holds: repositories, contracts, work in flight |
+| `comment` | Post a sibling comment on a pull request (used by the GitHub Action) |
 | `mcp` | Run the MCP server for coding agents |
 | `hook` | The push-time hook for Claude Code |
 | `server` | What an organisation server adds, and how to connect to one |
 
 ## Use it from a coding agent
 
-- **Claude Code:** `/plugin install ledger --marketplace Aglium/ledger-client`. The plugin
-  adds the skill, the MCP server, a push-time hook and `/ledger:setup`, `/ledger:brief`,
-  `/ledger:replay`. Its own README is in [`plugin/`](plugin/README.md).
+- **Claude Code:** the plugin in [`plugin/`](plugin/README.md) adds the skill, the MCP server,
+  a push-time hook and `/ledger:setup`, `/ledger:coverage`, `/ledger:brief`, `/ledger:replay`.
 - **Any MCP client:** run `aglium-ledger mcp` as a stdio server. Tools: `brief`, `who_owns`,
   `inflight_for`, `decisions_for`, `feedback`.
+
+Installation on a clean machine, permissions and troubleshooting:
+[docs/install.md](docs/install.md).
 
 ## On a pull request
 
 The GitHub Action in this repository runs the client statelessly on each pull request and
-comments when other work shares the change's ticket. It is advisory and never fails a build.
+comments when other work in your organisation shares the change's ticket. It is advisory and
+never fails a build. Today it links work by ticket key only; the full brief, with contracts
+and decisions, runs locally and in the plugin.
 
 ```yaml
 - uses: Aglium/ledger-client@v0.1.0
@@ -80,27 +108,23 @@ comments when other work shares the change's ticket. It is advisory and never fa
     config: .github/ledger.yml
 ```
 
-## What it contacts
+## Trust and data
 
-| What | When |
-|---|---|
-| Your forge's API (`api.github.com`, `api.bitbucket.org`) | Listing the organisation's repositories, and pull request comments. Token from `LEDGER_GITHUB_TOKEN` / the Bitbucket variables, or from git's credential helper |
-| Your forge over git | Cloning and fetching mirrors, with the credential git already has |
-| Your organisation's Ledger server | Only when `LEDGER_URL` is set |
+The client runs on your machine. It reads your repositories with the credential git already
+has, sends nothing to Aglium, makes no model calls, and puts no file contents in its answers:
+they carry names, contracts, decisions and paths. Exactly what it reads, contacts and stores
+is in [docs/trust.md](docs/trust.md).
 
-It sends nothing to Aglium, makes no model calls, and sends no source code anywhere.
+## Client and server
 
-## With an organisation server
-
-Alone, the client reads the estate live: slower, and with no memory between calls. An
-organisation server keeps a stored index for everyone: faster briefs, context before any code
-is written, producers and consumers of each contract, decisions on unmerged branches. Set
-`LEDGER_URL` and `LEDGER_API_TOKEN` and the client asks it instead. The server is a separate
-commercial product; `aglium-ledger server` says what it adds, and
-[the Ledger page](https://aglium.com/platform/ledger-server.html) says how to get one.
+The client is complete by itself and free to use. It reads the estate live, on demand, from
+what is on your machine. An organisation server keeps a shared index for everyone: faster
+answers, context before code is written, who produces and consumes each contract, decisions
+still on unmerged branches. Side by side: [docs/client-vs-server.md](docs/client-vs-server.md).
+`aglium-ledger server` says the same from the command line.
 
 ## Licence
 
-[PolyForm Shield License 1.0.0](LICENSE), source-available, unmodified. Free to use, change and
-redistribute, at work too; not to build a product that competes with Ledger. The licence text
-is what counts. Copyright (c) 2026 Aglium, [aglium.com](https://aglium.com).
+[PolyForm Shield License 1.0.0](LICENSE): source-available, not open source. Free to use,
+change and redistribute, at work too; not to build a product that competes with Ledger. The
+licence text is what counts. Copyright (c) 2026 Aglium, [aglium.com](https://aglium.com).

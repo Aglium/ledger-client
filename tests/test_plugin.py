@@ -21,6 +21,15 @@ def test_the_plugin_version_is_the_client_version():
     assert manifest["version"] == client["project"]["version"]
 
 
+def test_the_runner_fetches_the_same_release_with_the_mcp_extra():
+    """An unpinned fetch runs whatever is newest; one without `mcp` cannot start the server."""
+    import re
+    text = RUNNER.read_text()
+    client = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert re.search(r"^LEDGER_VERSION=(\S+)$", text, re.M).group(1) == client["project"]["version"]
+    assert "aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v${LEDGER_VERSION}" in text
+
+
 def test_only_the_push_time_hook_is_registered():
     """Session start and the prompt hook stay out until they are measured again."""
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
@@ -30,7 +39,8 @@ def test_only_the_push_time_hook_is_registered():
 def test_every_command_the_plugin_names_exists():
     from ledger.cli import app
     have = {c.name or c.callback.__name__ for c in app.registered_commands}
-    assert {"init", "brief", "replay", "hook", "mcp", "mirrors"} <= have
+    assert {"init", "brief", "replay", "hook", "mcp", "mirrors", "coverage"} <= have
+    assert "feedback" in {g.name for g in app.registered_groups}
 
 
 def hook(payload: dict, **env) -> subprocess.CompletedProcess:
@@ -94,8 +104,16 @@ def test_client_docs_stand_alone():
     for readme in (client / "README.md", PLUGIN / "README.md"):
         text = readme.read_text()
         assert _prose_words(readme) >= 40
-        for server_only in ("ledger_server", "packages/ledger-server", "docs/", "ledger-server "):
+        for server_only in ("ledger_server", "packages/ledger-server", "ledger-server ",
+                            "docs/architecture", "docs/operations"):
             assert server_only not in text, f"{readme} mentions {server_only!r}"
+
+
+def test_every_relative_link_in_the_docs_resolves():
+    import re
+    for doc in [ROOT / "README.md", PLUGIN / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+        for target in re.findall(r"\]\((?!https?://|#|mailto:)([^)#\s]+)", doc.read_text()):
+            assert (doc.parent / target).exists(), f"{doc.name} links to missing {target}"
 
 
 def test_the_runner_is_executable():

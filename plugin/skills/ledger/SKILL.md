@@ -18,15 +18,19 @@ lines. If an argument is given (a ticket key, a contract, or `repo ref`), answer
 
 ## Feedback — record it when it is given
 
-The ledger's usefulness is being measured. When the user reacts to anything the ledger said —
+Whether Ledger is useful is measured by what its users say. When the user reacts to anything the ledger said —
 at session start, in a brief, anywhere — record it with `feedback`:
 
 | The user says | verdict |
 |---|---|
 | "useful", "good catch", "didn't know that" | `useful` |
-| "irrelevant", "noise", "not related" | `noise` |
-| "that's not true", "that's merged already" | `wrong` |
+| "we knew", "obvious", "already handled" | `known` |
+| "that's not true", "not related", "that's merged already" | `false_positive` |
+| "can't tell from this", "how would I check that?" | `insufficient_evidence` |
 | "it should have told me about X" | `missed` (put X in `note`) |
+
+Without an organisation server the answer is kept in a file on the user's machine and sent
+nowhere; say so if they ask. Older words (`noise`, `wrong`) are still accepted.
 
 Pass the `event_id` from the answer — every answer carries one. If you don't have it, pass the `repo` and the `tool` that gave the answer (`brief`, `who_owns`, ...), so the verdict lands on the right answer. Do not ask for feedback unprompted —
 one sentence from the user, recorded, is the whole mechanism.
@@ -57,7 +61,9 @@ git rev-parse --abbrev-ref HEAD                   # ref
 
 ## Reading the recommendation
 
-- **proceed** — nothing found elsewhere. Carry on.
+- **proceed** — nothing found in what Ledger could see. Carry on, but if `index.live_repos`
+  holds only this repository or `unreadable_repos` is not empty, say that the answer covers
+  little, and suggest `/ledger:coverage`.
 - **review_with** — other work overlaps. Name the repos, branches and people from `impacts`
   and `actors` in your review or PR description, and check the shared `contracts` for
   compatibility before changing them.

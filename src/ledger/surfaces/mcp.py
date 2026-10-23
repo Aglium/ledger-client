@@ -9,7 +9,7 @@ this server does not grant it the estate's code.
     inflight_for(ticket)              open work on a ticket, in every repo
     who_owns(surface, name)           repos that touch a contract
     decisions_for(ticket|contract|repo)  ADRs and TODOs that govern it
-    feedback(verdict, ...)            was that answer useful, noise, wrong -- or missed?
+    feedback(verdict, ...)            useful, already known, false positive, can't verify -- or missed?
 
 The tools are the same wherever the answer comes from. A *backend* supplies
 it: the organisation server over HTTP, or a live read of the estate on this
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Protocol
 
+from ledger import feedback as fb
 from ledger import remote, service
 from ledger.config import Config
 from ledger.core.contracts import ContractRef, Surface
@@ -43,9 +44,10 @@ the deciders it lists. Treat insufficient_data as "unknown", never as "safe".
 Use `inflight_for` when a ticket is mentioned, `who_owns` before changing a
 topic, endpoint or table, and `decisions_for` before contradicting a design.
 
-When the user reacts to something the ledger said -- "that was useful", "that's
-noise", "wrong", or "it should have told me about X" -- record it with
-`feedback`. Do not ask for feedback unprompted; record it when it is given.
+When the user reacts to something the ledger said -- "that was useful", "we
+already knew", "that's wrong", "can't tell from this", or "it should have told
+me about X" -- record it with `feedback`. Do not ask for feedback unprompted;
+record it when it is given. Without a server it is kept on this machine only.
 """
 
 #: Said on every answer read without the organisation index, because a short
@@ -89,8 +91,16 @@ class RemoteBackend:
         return self._get("/decisions", ticket=ticket, contract=contract, repo=repo)
 
     def feedback(self, verdict, note, event_id, repo, ref, tool):
+        try:
+            v = fb.normalise(verdict)
+        except fb.BadVerdict as e:
+            raise BadRequest(str(e)) from None
+        word = fb.SERVER_WORD[v]
+        if word != v:
+            # The server's own words are coarser; the reader's word goes with the note.
+            note = f"[{v}] {note}".strip()
         return remote.post(self.url, self.token, "/feedback",
-                           {"verdict": verdict, "note": note, "event_id": event_id,
+                           {"verdict": word, "note": note, "event_id": event_id,
                             "repo": repo, "ref": ref, "tool": tool})
 
 
@@ -155,13 +165,15 @@ class LiveBackend:
                           "unreadable_repos": sorted(unreadable)}}
 
     def feedback(self, verdict, note, event_id, repo, ref, tool):
-        """No server to keep it: the verdict is checked and nothing is sent anywhere."""
-        verdict = (verdict or "").strip().lower()
-        if verdict not in ("useful", "noise", "wrong", "missed"):
-            raise BadRequest("verdict must be one of: useful, noise, wrong, missed")
-        return {"verdict": verdict, "kept": False,
-                "note": "There is no organisation server to keep this against the answer "
-                        "(set LEDGER_URL). The note was not sent anywhere."}
+        """No server: kept in a file on this machine, and sent nowhere."""
+        try:
+            row = fb.record(verdict, repo=repo, ref=ref, note=note, source=f"mcp:{tool or ''}",
+                            event_id=event_id)
+        except fb.BadVerdict as e:
+            raise BadRequest(str(e)) from None
+        return {"verdict": row["verdict"], "kept": True, "where": str(fb.store()),
+                "note": "Kept on this machine only; nothing was sent anywhere. "
+                        "`aglium-ledger feedback summary` shows the totals."}
 
 
 def _call(fn: Callable[[], Any]) -> Any:
@@ -224,8 +236,11 @@ def build_server(backend: Backend):
                  repo: str | None = None, ref: str | None = None, tool: str | None = None) -> dict:
         """Record what the user thought of a ledger answer.
 
-        verdict: useful | noise | wrong | missed. `missed` means the ledger
+        verdict: useful | known | false_positive | insufficient_evidence | missed.
+        `known`: right, but the user already knew. `insufficient_evidence`: the
+        user could not check it from what was given. `missed`: the ledger
         should have said something and did not -- describe what in `note`.
+        Without an organisation server the answer is kept on this machine only.
         Pass the `event_id` from the answer -- every answer carries one. Without
         it, pass the repo and the `tool` that answered (brief, who_owns, ...),
         so the verdict lands on the right answer.

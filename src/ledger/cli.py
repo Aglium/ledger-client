@@ -101,6 +101,170 @@ def init(
         typer.echo("  aglium-ledger brief <repo> <branch>        # what a change affects")
 
 
+@app.command()
+def coverage(
+    config: str = typer.Option(None, envvar="LEDGER_CONFIG", help="Path to ledger.yml"),
+    local_root: str = typer.Option(None, "--local-root", help="Read clones in this directory"),
+    days: int = typer.Option(90, help="How much history to count"),
+    forge: bool = typer.Option(False, "--forge",
+                               help="Also list the organisation on its forge, to name repositories "
+                                    "that are not on this machine (the one network call)"),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Which repositories Ledger can see from here, what it needs, and where the gaps are.
+
+    Run it after setup and before a replay. It names every repository it
+    read, how much merged history each holds, and what is missing, so a quiet
+    answer can be told apart from a blind one.
+    """
+    from ledger import coverage as cv
+
+    checks = cv.prerequisites(config)
+    broken = [c for c in checks if not c.ok and c.required and c.name != "config"]
+    try:
+        cfg = Config.load(config)
+    except FileNotFoundError:
+        cfg = None
+    cov = None
+    if cfg is not None:
+        try:
+            adapters = service.build_adapters(cfg, local_root)
+            from ledger.adapters.vcs.localgit import LocalGitAdapter
+            vcs = next((a for a in adapters if isinstance(a, LocalGitAdapter)), None)
+        except LedgerError as e:
+            vcs = None
+            checks.append(cv.Check("estate", False, str(e)))
+        if vcs is not None:
+            fa = service.forge_adapters(cfg) if forge else None
+            cov = cv.survey(cfg, vcs, days=days, forge=fa)
+        elif not any(c.name == "estate" for c in checks):
+            checks.append(cv.Check("estate", False, "no local repositories configured: set "
+                                   "`mirror_root` or `local_root`, or pass --local-root. Briefs "
+                                   "over the forge API alone cannot replay history."))
+    if as_json:
+        import json
+        typer.echo(json.dumps({
+            "prerequisites": [{"name": c.name, "ok": c.ok, "detail": c.detail,
+                               "required": c.required} for c in checks],
+            "coverage": cov.to_dict() if cov else None}, indent=2))
+        raise typer.Exit(1 if broken or cov is None else 0)
+    typer.secho("PREREQUISITES", bold=True)
+    for c in checks:
+        mark = "ok " if c.ok else ("!! " if c.required else "-- ")
+        typer.secho(f"  {mark}{c.name:<10} {c.detail}",
+                    fg=None if c.ok else ("red" if c.required else "yellow"))
+    if cov is None:
+        raise typer.Exit(1)
+    typer.secho(f"\nREPOSITORIES LEDGER CAN SEE  ({len(cov.readable)} readable"
+                + (f", from {', '.join(cov.roots)}" if cov.roots else "") + ")", bold=True)
+    for r in cov.repos:
+        if r.error:
+            typer.secho(f"  {r.repo:<32} unreadable: {r.error}", fg="red")
+            continue
+        fetched = (f"  fetched {r.fetched_days_ago}d ago" if r.fetched_days_ago is not None else "")
+        typer.echo(f"  {r.repo:<32} {r.default_branch:<10} last commit "
+                   f"{r.last_commit.isoformat() if r.last_commit else '—':<10}  "
+                   f"{r.pull_requests:>3} PR(s) in {days}d{fetched}")
+    if cov.excluded:
+        typer.echo(f"  excluded by config: {', '.join(cov.excluded)}")
+    gaps = cov.gaps()
+    if gaps:
+        typer.secho("\nGAPS", bold=True, fg="yellow")
+        for g in gaps:
+            typer.secho(f"  - {g}", fg="yellow")
+    if cov.not_here is None:
+        typer.echo("\nRepositories that are not on this machine are invisible to Ledger. "
+                   "`--forge` lists the organisation to name them.")
+    typer.secho(f"\n{cov.verdict()}", bold=True,
+                fg="green" if cov.verdict().startswith("ready") else "yellow")
+    if cov.verdict().startswith("ready"):
+        typer.echo("next: aglium-ledger replay --everyone")
+    raise typer.Exit(1 if broken else 0)
+
+
+feedback_app = typer.Typer(help="Say whether Ledger's answers were any good. Kept on this machine.",
+                           no_args_is_help=True)
+app.add_typer(feedback_app, name="feedback")
+
+
+@feedback_app.command("record")
+def feedback_record(
+    verdict: str = typer.Argument(..., help="useful | known | false_positive | insufficient_evidence | missed"),
+    case: str = typer.Option(None, "--case", help="A case id from a replay report"),
+    report: str = typer.Option("ledger-replay.md", "--report", help="The replay report the case is in"),
+    repo: str = typer.Option(None, "--repo"),
+    ref: str = typer.Option(None, "--ref"),
+    note: str = typer.Option("", "--note", help="Why, in your words. Kept here, sent nowhere"),
+):
+    """Record one answer about a finding."""
+    from pathlib import Path
+
+    from ledger import feedback as fb
+
+    found = fb.case(Path(report), case) if case else None
+    if case and found is None:
+        typer.secho(f"no case {case} beside {report}; recording it without one", fg="yellow", err=True)
+    found = found or {}
+    try:
+        row = fb.record(verdict, repo=repo or found.get("repo"), ref=ref or found.get("ref"),
+                        sha=found.get("sha"), recommendation=found.get("recommendation"),
+                        note=note, source="replay" if case else "cli", case=case)
+    except fb.BadVerdict as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(f"kept: {row['verdict']}" + (f" for {row['repo']} {row.get('ref', '')}" if row.get("repo") else "")
+               + f"  ({fb.store()})")
+
+
+@feedback_app.command("import")
+def feedback_import(report: str = typer.Argument("ledger-replay.md")):
+    """Keep the boxes ticked in a replay report."""
+    from pathlib import Path
+
+    from ledger import feedback as fb
+
+    md = Path(report)
+    if not md.is_file():
+        typer.secho(f"{md} not found", fg="red", err=True)
+        raise typer.Exit(2)
+    kept, skipped = fb.import_report(md)
+    typer.echo(f"kept {len(kept)} answer(s)" + (f"; {len(skipped)} already kept" if skipped else "")
+               + f"  ({fb.store()})")
+    if not kept and not skipped:
+        typer.echo("no ticked boxes found: tick one per finding, like [x] useful, and run this again")
+
+
+@feedback_app.command("summary")
+def feedback_summary(
+    share: bool = typer.Option(False, "--share",
+                               help="Write a file you can send: verdicts and hashed names, no code"),
+    notes: bool = typer.Option(False, "--with-notes", help="Include your notes in the shared file"),
+    out: str = typer.Option("ledger-feedback.json", "--out"),
+):
+    """Totals of your answers. With --share, a file to send if you choose to."""
+    import json
+    from pathlib import Path
+
+    from ledger import feedback as fb
+
+    s = fb.summary(share=share, notes=notes)
+    if not s["answers"]:
+        typer.echo("no answers kept yet. After a replay: aglium-ledger feedback import ledger-replay.md")
+        raise typer.Exit(0)
+    typer.echo(f"{s['answers']} answer(s)")
+    for v, n in s["by_verdict"].items():
+        if n:
+            typer.echo(f"  {v:<22} {n}")
+    r = s["rates"]
+    if r["useful"] is not None:
+        typer.echo(f"useful {r['useful']:.0%} · false positive {r['false_positive']:.0%} · "
+                   f"can't verify {r['insufficient_evidence']:.0%}  (of judged findings)")
+    if share:
+        Path(out).write_text(json.dumps(s, indent=2))
+        typer.echo(f"\nwrote {out}. It contains {s['contains']}")
+        typer.echo("Nothing was sent. Read it, then send it to whoever asked, if you want to.")
+
+
 @app.command("server")
 def server_cmd():
     """What an organisation server adds to this client, and where to get one."""
@@ -367,10 +531,13 @@ def replay(
 
     got = rp.run(cfg, vcs, since=date.today() - timedelta(days=days), author=who, limit=limit,
                  progress=progress)
-    Path(out).write_text(rp.render(got))
-    typer.echo(f"replayed {len(got.briefed)} change(s); {len(got.with_context)} had cross-repository "
-               f"context the branch could not show")
-    typer.echo(f"report: {out}")
+    md, side = rp.write(got, out)
+    typer.echo(f"replayed {len(got.briefed)} change(s): {len(got.with_context)} with something to say "
+               f"about another repository, {len(got.clear)} with nothing found, "
+               f"{len(got.uncovered)} where Ledger could not see enough to tell")
+    for g in got.gaps():
+        typer.secho(f"gap: {g}", fg="yellow", err=True)
+    typer.echo(f"report: {md}  (answers go in with `aglium-ledger feedback import {md}`)")
     if os.environ.get("LEDGER_URL") is None:
         from ledger import upgrade
         typer.echo(f"This was a live read. {upgrade.POINTER}")

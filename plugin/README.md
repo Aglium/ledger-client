@@ -14,11 +14,12 @@ involve. It returns names, contracts, decisions and paths as evidence, never fil
 | Component | What it does |
 |---|---|
 | `ledger` skill | Tells Claude when to ask Ledger: before reviewing, planning or pushing a branch, when a ticket key comes up, before changing a shared topic, endpoint or table |
-| `ledger` MCP server | Local tools: `brief`, `who_owns`, `inflight_for`, `decisions_for`, `feedback` |
+| `ledger` MCP server | Local tools: `brief`, `who_owns`, `inflight_for`, `decisions_for`, `feedback` (kept on your machine) |
 | Push hook | On a `git push`, `gh pr create`, `glab mr create` or new branch, adds a brief to the session. Silent when there is nothing to say; never blocks the command, even if Ledger fails |
-| `/ledger:setup` | Writes a config for this repository's organisation, and optionally mirrors its repositories |
+| `/ledger:setup` | Checks prerequisites, writes a config for this repository's organisation, optionally mirrors its repositories, and says which ones Ledger can see |
+| `/ledger:coverage` | Which repositories Ledger can see from here, and the gaps |
 | `/ledger:brief` | What the current branch affects in other repositories |
-| `/ledger:replay` | Replays your recent merged changes: would a brief have told you something you did not know? |
+| `/ledger:replay` | Replays your recent merged changes as they were, with no hindsight: would Ledger have told you something you did not know? Then asks for your verdict on each finding |
 
 The recommendation is one of `proceed`, `review_with` (name these repositories and people in
 your review), `decision_needed` (a person must decide first) or `insufficient_data` (unknown,
@@ -30,10 +31,11 @@ never safe).
 - git, with a credential for your organisation's forge (GitHub or Bitbucket).
 
 The plugin runs the client in this order: `LEDGER_BIN` if set, then `aglium-ledger` on your
-PATH, then `uvx` to fetch the `aglium-ledger` package. To install it yourself:
+PATH, then `uvx` to fetch the client release this plugin pins, with its MCP extra. To install
+it yourself:
 
 ```bash
-uv tool install 'aglium-ledger[mcp]'      # or: pipx install 'aglium-ledger[mcp]'
+uv tool install 'aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v0.1.0'
 ```
 
 ## Install
@@ -54,7 +56,8 @@ Or add the marketplace first with `/plugin marketplace add Aglium/ledger-client`
    and asks before writing it.
 3. Optionally let it mirror the organisation's repositories, so briefs can see repositories
    you have not cloned. This can take a while and some disk.
-4. Run `/ledger:brief` on your branch.
+4. Run `/ledger:replay` to see what Ledger would have said about your recently merged changes,
+   and `/ledger:brief` on your current branch.
 
 ## What it runs, reads and sends
 
@@ -62,11 +65,12 @@ Ledger runs on your machine. Everything below is listed so you can check it.
 
 | What | When | Where it goes |
 |---|---|---|
-| Runs the `aglium-ledger` client (a Python package) | Every hook, tool and command | Local. Fetched from the Python package index by `uvx` if not installed |
+| Runs the `aglium-ledger` client (a Python package) | Every hook, tool and command | Local. Fetched by `uvx` from this repository's tagged release (and its dependencies from the Python package index) if not installed |
 | Reads your checkout and git history | Briefs | Local |
 | Clones your organisation's repositories as bare mirrors | Only if you agree during setup, or run `aglium-ledger mirrors` | From your forge to `~/.ledger/mirrors`, using the credential git already has |
 | Lists your organisation's repositories | Setup and mirroring | Your forge's API: `api.github.com` or `api.bitbucket.org`. The token comes from `LEDGER_GITHUB_TOKEN` / the Bitbucket variables, or from git's own credential helper (`git credential fill`) |
 | Writes a config and a scan cache | Setup, briefs | Your user config and cache directories (`LEDGER_CONFIG`, `LEDGER_CACHE_DIR` override them) |
+| Keeps your verdicts on findings | When you give one, in a replay or to the `feedback` tool | A file on your machine (`~/.local/share/ledger/feedback.jsonl`). Sent nowhere |
 | Asks your organisation's Ledger server | Only when `LEDGER_URL` is set | That server, with `LEDGER_API_TOKEN`. It receives the repository, branch and question, and returns derived facts |
 
 The client sends nothing to Aglium, makes no model calls, and sends no source code anywhere.

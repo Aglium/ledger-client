@@ -1,7 +1,8 @@
 name: release
 # Pushing a tag `vX.Y.Z` builds the package and attaches it to a GitHub release.
-# Nothing is published to a package index: the package name and registry are
-# not decided yet.
+# Publishing to PyPI is off until the repository variable PUBLISH_TO_PYPI is
+# `true` and PyPI trusted publishing is set up for `aglium-ledger` (workflow
+# `release.yml`, environment `pypi`).
 on:
   push:
     tags: ["v*"]
@@ -24,7 +25,20 @@ jobs:
       - run: pip install build
       # Only the client is released here. The server ships as an image, privately.
       - run: python -m build --outdir dist
+      - uses: actions/upload-artifact@v4
+        with: { name: dist, path: dist/ }
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+  pypi:
+    needs: build
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist/ }
+      - uses: pypa/gh-action-pypi-publish@release/v1

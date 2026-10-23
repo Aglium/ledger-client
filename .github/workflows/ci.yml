@@ -12,3 +12,33 @@ jobs:
           pip install '.[mcp]' pytest pytest-asyncio respx
           python -c "import importlib.util as u, sys; sys.exit(bool(u.find_spec('sqlalchemy') or u.find_spec('ledger_server')))"
           pytest -q tests
+  clean-install:
+    # What a new user's machine does: no client installed, the plugin's runner
+    # fetches it with uvx (from this checkout instead of the tagged release).
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Fetch with uvx, check prerequisites and coverage, replay
+        env:
+          LEDGER_PACKAGE: "aglium-ledger[mcp] @ git+file://${{ github.workspace }}"
+        run: |
+          set -eu
+          est=$(mktemp -d)
+          for r in orders billing; do
+            git init -q -b main "$est/$r"
+            git -C "$est/$r" -c user.email=a@example.com -c user.name=a commit -q --allow-empty -m start
+          done
+          printf 'org: acme\nproject_keys: [ABC]\n' > "$est/ledger.yml"
+          export LEDGER_CONFIG="$est/ledger.yml"
+          plugin/scripts/ledger-run.sh coverage --local-root "$est" --json > cov.json || true
+          python3 -c "
+          import json; d = json.load(open('cov.json'))
+          assert {r['repo'] for r in d['coverage']['repos']} == {'orders', 'billing'}, d
+          assert all(c['ok'] for c in d['prerequisites']), d['prerequisites']
+          "
+          plugin/scripts/ledger-run.sh replay --local-root "$est" --everyone --out "$est/r.md"
+          grep -q "## Nothing to replay" "$est/r.md"
