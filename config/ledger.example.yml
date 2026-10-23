@@ -1,0 +1,151 @@
+# Ledger configuration. Copy to config/ledger.yml (git-ignored), or point
+# LEDGER_CONFIG at a file kept with your deployment rather than with the product.
+#
+# Nothing here is baked into core/: a new organisation changes this file and
+# nothing else.
+
+# Your organisation's name. An organisation server uses it to tell tenants apart.
+org: example
+
+# Ticket keys that appear in your branch names and PR titles, e.g. a branch
+# `feat/abc-123-add-export` carries ticket ABC-123. These are what link work
+# across repositories, so list every project key your teams use.
+project_keys: [ABC, XYZ]
+
+# Scope dial: how far back a branch counts as live. Report the resulting branch
+# count (`aglium-ledger scan`) before any backfill -- this one number decides whether
+# the index reasons over dozens of branches or hundreds.
+liveness_days: 30
+
+# Branches holding integrated-but-unreleased work. Commits here that are not in
+# the default branch are in flight: written, merged, not yet in production.
+integration_branches: [stage, staging, develop]
+
+# Repositories to leave out of the estate, e.g. this tool's own checkout if it
+# sits alongside the repos it indexes (its test fixtures would otherwise read
+# as real contract evidence).
+exclude_repos: []
+
+comment_marker: "ledger:siblings"
+
+# Verdict classes a gate fails on. Empty, the default: everything is advisory,
+# and `aglium-ledger brief --gate` always exits 0. Turn a class on once you have
+# measured that it is right on your own changes (`aglium-ledger replay`):
+#
+#   enforce: [decision_needed]
+#
+# `review_with`, `decision_needed` and `insufficient_data` can be enforced.
+# `proceed` cannot.
+enforce: []
+
+# Where the estate is read from.
+#
+# Mirrors (recommended for anything shared). `aglium-ledger mirrors` asks the forges
+# below what repositories the organisation has, then clones each one here as a
+# bare mirror and keeps it fetched. Nobody has to clone anything for the
+# ledger: an engineer clones only the repository they work in, and the estate
+# is the organisation's repositories rather than whichever ones happened to be
+# checked out on somebody's laptop.
+#
+# Bare mirrors have no working trees: roughly a fifth of the disk, cheaper to
+# fetch, and every read the index performs still works. The one thing they
+# cannot serve is a developer's uncommitted files, which are not on the server
+# in any case.
+# mirror_root: ~/.ledger/mirrors
+#
+# Checkouts. Set this ALONGSIDE mirror_root on a developer's machine: the
+# checkouts sit in front of the mirrors, so the repositories you work in are
+# read with their working trees and your uncommitted files stay part of a
+# brief, while the mirrors supply everything nobody checked out. Set it alone
+# and the estate means "whatever is checked out here", which is right for one
+# machine and wrong for a server.
+#
+# `--local-root` and $LEDGER_LOCAL_ROOT override it. Run `aglium-ledger mirrors`
+# again to refresh the mirrors.
+# local_root: ~/src/your-org
+
+# Source forges. Credentials come from the environment, never from this file.
+# They are what `aglium-ledger mirrors` asks "what repositories does this
+# organisation have?" -- the one question a disk cannot answer -- so discovery
+# needs them even when every read is local.
+forges:
+  - kind: github
+    namespace: your-github-org
+    token_env: LEDGER_GITHUB_TOKEN
+  - kind: bitbucket
+    namespace: your-bitbucket-workspace
+    user_env: LEDGER_BITBUCKET_USER
+    password_env: LEDGER_BITBUCKET_APP_PASSWORD
+    # An API credential is not always a git credential. A Bitbucket Atlassian
+    # API token reads the REST API and is rejected by git over HTTPS, which
+    # wants an app password. Where they differ, say so and git falls back to
+    # this machine's credential helper:
+    # git_credentials: helper
+    # git_user: your-bitbucket-username
+
+# Every credential is named here as an environment variable and never given a
+# value. Without one, git's own credential helper is asked. To keep a token for
+# Ledger alone, put it in a `.env` file NEXT TO THIS ONE -- it is read
+# automatically, and anything already exported wins:
+#
+#   ~/.config/ledger/ledger.yml
+#   ~/.config/ledger/.env     chmod 600:  LEDGER_GITHUB_TOKEN=...
+#
+# Keep that directory outside any repository, so nothing can commit it.
+
+# Who produces and consumes each topic. Without this, the ledger can only say
+# which repositories *name* a topic -- which makes a shared library that
+# mentions it look like a party to it, and misses a service that binds it to a
+# variable and never writes the name again.
+#
+# If your estate declares access in a standard form, name the format and
+# nothing else. The file glob shown is the default for each one:
+#
+#   declarations:
+#     - repo: infra
+#       format: strimzi          # KafkaUser ACLs      (*.yaml)
+#     - repo: infra
+#       format: terraform-acl    # kafka_acl resources (*.tf)
+#     - repo: contracts
+#       format: asyncapi         # service documents   (*asyncapi*.y*ml)
+#       # AsyncAPI 2.x describes operations from the reader's point of view, so
+#       # a channel's `publish` is something the application *consumes*. Set
+#       # `perspective: application` if your 2.x documents are written the
+#       # other way round. 3.x states the direction itself and ignores this.
+#
+# If ownership is declared in your own layout, describe where it lives:
+#
+#   declarations:
+#     - repo: infra
+#       files: "apps/*.yaml"
+#       produces: kafka.topics          # dotted path to a list of topic names
+#       consumes: kafka.consumes
+#       produced_name: "{app}.{value}"  # if owned names are namespaced
+#       ignore: ["*.dlq"]
+#
+# Declared apps are matched to repositories by the topics they bind. Where the
+# names are too far apart for that, say so:
+#   app_repos: {platform-orders-service: orders_svc}
+
+# Documentation to link contracts to. Each source is a repository in the
+# estate, or a directory on this machine -- a mirrored wiki is routinely kept
+# out of git, and the first real one had its 257 pages in `.gitignore`.
+#
+#   docs:
+#     - repo: handbook             # a repository of markdown in the estate
+#       files: "docs/**/*.md"      # optional; markdown anywhere by default
+#     - name: wiki                 # a directory: an export or a mirror
+#       path: ~/mirrors/wiki/pages
+#
+# A page is only said to document a contract when it cites it as code, in a
+# fenced block or between backticks: prose mentions the idea, not the
+# contract. Names that are ordinary words (`invoice`, `vendor`) are skipped
+# entirely -- matching one of those literally linked a single database table
+# to 135 unrelated pages.
+#
+# Where a page carries YAML frontmatter with `url` and `updated`, both are
+# kept: an answer links to the wiki rather than to a file, and says how far
+# behind it is -- how many commits have changed lines naming the contract
+# since the page was written, and which one was the latest. That needs local
+# clones (`local_root`); a forge API cannot search history that way, and the
+# answer is then "unknown", never "up to date".

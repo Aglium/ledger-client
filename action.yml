@@ -1,0 +1,47 @@
+name: "Ledger — cross-repo siblings"
+description: >
+  Comment on a pull request naming in-flight work in OTHER repos that shares its
+  ticket. Stateless: queries the forges directly, needs no database or service.
+inputs:
+  github-token:
+    description: "Token with read access to the org's repos and write access to PR comments."
+    required: true
+  config:
+    description: "Path to your ledger.yml, relative to the calling repository."
+    required: true
+  post:
+    description: "Post the comment. Set to 'false' to render it into the log only."
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install
+      shell: bash
+      # A composite action already has its own files at action_path, so it never
+      # needs to check itself out -- which also means no org or repo name is
+      # hardcoded here. Whoever hosts the action, it installs from itself.
+      run: pip install -e "${{ github.action_path }}"
+    - name: Comment
+      shell: bash
+      env:
+        LEDGER_GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        REPO: ${{ github.repository }}
+      run: |
+        # --live keeps this a single step with no infrastructure behind it.
+        # Failure here must never fail someone else's PR: this is advisory, and
+        # a tool that red-builds a branch on its own outage gets removed.
+        aglium-ledger comment "$REPO" "$PR_NUMBER" \
+          --ref "$HEAD_REF" \
+          --head-sha "$HEAD_SHA" \
+          --config "${{ github.workspace }}/${{ inputs.config }}" \
+          --live \
+          $([ "${{ inputs.post }}" = "true" ] && echo "--post" || echo "--dry-run") \
+          || echo "::warning::ledger could not produce a sibling comment; continuing"

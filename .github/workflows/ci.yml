@@ -1,0 +1,14 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: The client, with no database library installed
+        run: |
+          pip install '.[mcp]' pytest pytest-asyncio respx
+          python -c "import importlib.util as u, sys; sys.exit(bool(u.find_spec('sqlalchemy') or u.find_spec('ledger_server')))"
+          pytest -q tests

@@ -1,0 +1,17 @@
+{
+  "name": "aglium",
+  "owner": {
+    "name": "Aglium",
+    "url": "https://aglium.com"
+  },
+  "metadata": {
+    "description": "Plugins from Aglium. Ledger: cross-repository context for a change, before it merges."
+  },
+  "plugins": [
+    {
+      "name": "ledger",
+      "source": "./plugin",
+      "description": "Before you push: what this change affects in the repositories you are not looking at, and whether someone needs to decide something first."
+    }
+  ]
+}

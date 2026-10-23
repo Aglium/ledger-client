@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ledger": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ledger-run.sh",
+      "args": ["mcp"]
+    }
+  }
+}

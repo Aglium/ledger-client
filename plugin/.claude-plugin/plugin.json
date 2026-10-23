@@ -1,0 +1,17 @@
+{
+  "name": "ledger",
+  "version": "0.1.0",
+  "description": "Before you push: what this change affects in the repositories you are not looking at, and whether someone needs to decide something first.",
+  "author": {
+    "name": "Aglium",
+    "url": "https://aglium.com"
+  },
+  "keywords": [
+    "cross-repo",
+    "code-review",
+    "coordination",
+    "contracts",
+    "impact"
+  ],
+  "license": "PolyForm-Shield-1.0.0"
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Ledger: a cross-repository brief when work is pushed or a pull request is opened. Silent when there is nothing to say; never blocks on its own failure.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PLUGIN_ROOT\"/scripts/ledger-run.sh push-hook",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
