@@ -30,8 +30,8 @@ The first command can take a minute: `uvx` is fetching the client release this p
 ## Command line
 
 ```bash
-uv tool install 'aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v0.1.0'
-# or: pipx install 'aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v0.1.0'
+uv tool install 'aglium-ledger[mcp]'
+# or: pipx install 'aglium-ledger[mcp]'
 ```
 
 Then, from a checkout of one of your organisation's repositories:

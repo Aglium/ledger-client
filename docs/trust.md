@@ -18,7 +18,7 @@ tools is not given your code through them.
 | `api.github.com` or `api.bitbucket.org` | Listing your organisation's repositories (`mirrors`, `coverage --forge`) and posting pull request comments (`comment --post`) | `LEDGER_GITHUB_TOKEN` or the Bitbucket variables, or the credential git's helper already holds |
 | Your forge over git | Cloning and fetching mirrors (`mirrors`) | The credential git already uses |
 | Your organisation's Ledger server | Only when `LEDGER_URL` is set | `LEDGER_API_TOKEN`. It receives the repository, branch and question, and your local change when the server cannot see it |
-| GitHub, and the Python package index | When the plugin fetches the client with `uvx`, the first time | Nothing of yours |
+| The Python package index | When the plugin fetches the client with `uvx`, the first time | Nothing of yours |
 
 Nothing else. In particular: no Aglium endpoint, no analytics, no model provider.
 

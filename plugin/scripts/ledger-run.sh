@@ -16,10 +16,9 @@
 #   LEDGER_API_TOKEN its read token
 
 # The client release this plugin was built with. Kept equal to plugin.json and
-# the package version by the tests. Fetched from the tagged source until the
-# package is on the Python package index.
+# the package version by the tests.
 LEDGER_VERSION=0.1.0
-PACKAGE=${LEDGER_PACKAGE:-"aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v${LEDGER_VERSION}"}
+PACKAGE=${LEDGER_PACKAGE:-"aglium-ledger[mcp]==${LEDGER_VERSION}"}
 
 find_ledger() {
   if [ -n "${LEDGER_BIN:-}" ] && [ -x "$LEDGER_BIN" ]; then

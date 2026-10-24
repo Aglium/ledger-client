@@ -35,7 +35,7 @@ PATH, then `uvx` to fetch the client release this plugin pins, with its MCP extr
 it yourself:
 
 ```bash
-uv tool install 'aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v0.1.0'
+uv tool install 'aglium-ledger[mcp]'
 ```
 
 ## Install
@@ -65,7 +65,7 @@ Ledger runs on your machine. Everything below is listed so you can check it.
 
 | What | When | Where it goes |
 |---|---|---|
-| Runs the `aglium-ledger` client (a Python package) | Every hook, tool and command | Local. Fetched by `uvx` from this repository's tagged release (and its dependencies from the Python package index) if not installed |
+| Runs the `aglium-ledger` client (a Python package) | Every hook, tool and command | Local. Fetched by `uvx` from the Python package index, at this plugin's pinned version, if not installed |
 | Reads your checkout and git history | Briefs | Local |
 | Clones your organisation's repositories as bare mirrors | Only if you agree during setup, or run `aglium-ledger mirrors` | From your forge to `~/.ledger/mirrors`, using the credential git already has |
 | Lists your organisation's repositories | Setup and mirroring | Your forge's API: `api.github.com` or `api.bitbucket.org`. The token comes from `LEDGER_GITHUB_TOKEN` / the Bitbucket variables, or from git's own credential helper (`git credential fill`) |

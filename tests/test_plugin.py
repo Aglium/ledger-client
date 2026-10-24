@@ -27,7 +27,7 @@ def test_the_runner_fetches_the_same_release_with_the_mcp_extra():
     text = RUNNER.read_text()
     client = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert re.search(r"^LEDGER_VERSION=(\S+)$", text, re.M).group(1) == client["project"]["version"]
-    assert "aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v${LEDGER_VERSION}" in text
+    assert '"aglium-ledger[mcp]==${LEDGER_VERSION}"' in text
 
 
 def test_only_the_push_time_hook_is_registered():

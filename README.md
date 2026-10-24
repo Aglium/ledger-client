@@ -27,7 +27,7 @@ In Claude Code:
 From a terminal (Python 3.12+ and [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-uv tool install 'aglium-ledger[mcp] @ git+https://github.com/Aglium/ledger-client@v0.1.0'
+uv tool install 'aglium-ledger[mcp]'
 cd ~/src/your-org/one-of-your-repos
 aglium-ledger init          # a config from this checkout; contacts nothing
 aglium-ledger mirrors       # optional: the rest of the organisation, as bare mirrors
