@@ -89,7 +89,9 @@ The Ledger client and this plugin are licensed under the
 
 The licence text in [LICENSE](LICENSE) is what counts. The organisation server
 (`ledger-server`) is a separate commercial product and is not part of this plugin. The client
-talks to one only when you point it at one with `LEDGER_URL`; see `aglium-ledger server` or
-[the Ledger page](https://aglium.com/platform/ledger-server.html) for what it adds.
+talks to one only when you point it at one with `LEDGER_URL`. Alone, the client sees only the
+repositories on your machine, reads them again for each answer, and keeps nothing shared; what
+it does not do, and what a server adds, is in
+[docs/client-vs-server.md](../docs/client-vs-server.md) and `aglium-ledger server`.
 
 Copyright (c) 2026 Aglium. Questions: [aglium.com](https://aglium.com).

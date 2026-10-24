@@ -43,6 +43,10 @@ ABOUT = f"""\
 You are running the Ledger client on its own. It reads your repositories live,
 on this machine, each time you ask.
 
+On its own it sees only the repositories and branches on this machine, reads
+everything again for each answer, takes direction from code and config only,
+checks fields only by the names a change removes, and keeps nothing shared.
+
 An organisation server keeps a shared index instead. With one, the same
 commands and the same plugin give you:
 

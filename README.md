@@ -122,10 +122,19 @@ is in [docs/trust.md](docs/trust.md).
 ## Client and server
 
 The client is complete by itself and free to use. It reads the estate live, on demand, from
-what is on your machine. An organisation server keeps a shared index for everyone: faster
-answers, context before code is written, who produces and consumes each contract, decisions
-still on unmerged branches. Side by side: [docs/client-vs-server.md](docs/client-vs-server.md).
-`aglium-ledger server` says the same from the command line.
+what is on your machine. What it does not do, alone:
+
+- see repositories or branches that are not on this machine;
+- answer in about 2 seconds (it reads again each time: seconds to tens of seconds);
+- read topic wiring declared in infrastructure (ACLs, Terraform, AsyncAPI), only code and config;
+- check every field of a contract (it checks the names a change removes, in consumers' code);
+- see work merged to an integration branch and not released, or decisions on unmerged branches;
+- say anything before code exists, or notice documentation a change leaves wrong;
+- share findings and feedback with your team, or learn which verdicts were right.
+
+An organisation server does all of these, for everyone, through the same plugin and commands.
+Side by side: [docs/client-vs-server.md](docs/client-vs-server.md). `aglium-ledger server`
+says the same from the command line.
 
 ## Licence
 
