@@ -47,13 +47,13 @@ def index(cache=None):
 
 class TestTheLabelledEstate:
     """The numbers the client is held to. Baseline, before these rules: recall
-    0.43, precision 0.75, no conflict found, every finding a correlation."""
+    0.56, precision 0.83, no conflict found, every finding a correlation."""
 
     def test_it_finds_what_matters_without_ticket_keys_and_nothing_else(self):
         got = lab_estate.measure()
         assert got["recall"] == 1.0 and got["recall_without_ticket"] == 1.0
         assert got["precision"] == 1.0 and got["false_alarms"] == 0
-        assert got["conflicts_found"] == "2/2"
+        assert got["conflicts_found"] == "3/3"
         assert got["strength_right"] == 1.0
 
     def test_the_same_author_alone_never_moves_a_verdict(self):

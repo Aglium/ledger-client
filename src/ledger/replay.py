@@ -35,7 +35,7 @@ from ledger.adapters.vcs.localgit import LocalGitAdapter
 from ledger.config import Config
 from ledger.core.join import Change, find_siblings
 from ledger.core.tickets import extract_tickets
-from ledger.pipeline.scan import ScanCache, scan_repo, uses_of
+from ledger.pipeline.scan import ScanCache, read_repo
 from ledger.pipeline.signals import NOT_A_CHANGE
 
 #: GitHub and Bitbucket word their merge commits differently; both name the branch.
@@ -325,8 +325,7 @@ class _Memo(ScanCache):
             self.hits += 1
             return self._seen[key]
         self.misses += 1
-        disc, decisions = scan_repo(vcs, repo, ref)
-        self._seen[key] = (uses_of(disc), decisions)
+        self._seen[key] = read_repo(vcs, repo, ref)
         return self._seen[key]
 
 

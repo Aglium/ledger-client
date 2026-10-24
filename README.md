@@ -38,8 +38,10 @@ aglium-ledger replay --everyone
 The replay writes `ledger-replay.md`. For each change it keeps three outcomes apart:
 
 - **something to say**: other work or contracts this change affected, each with links to the
-  commits and files you can open to check it, and how strong the claim is (a *conflict*, a
-  *dependency* over a named contract, or a *correlation* such as a shared ticket);
+  commits and files you can open to check it, and how strong the claim is (a *conflict*: it
+  removes something another repository reads, or cannot land with another change in flight; a
+  *dependency*: it faces another repository over a named topic or route; or a *correlation*,
+  such as a shared ticket);
 - **nothing found**, by a replay that could see enough to say so;
 - **could not see enough to tell**, which is never the same as safe.
 
@@ -96,9 +98,11 @@ Installation on a clean machine, permissions and troubleshooting:
 ## On a pull request
 
 The GitHub Action in this repository runs the client statelessly on each pull request and
-comments when other work in your organisation shares the change's ticket. It is advisory and
-never fails a build. Today it links work by ticket key only; the full brief, with contracts
-and decisions, runs locally and in the plugin.
+comments with the full brief: a field or contract the change removes that another repository
+reads, another change in flight that cannot land with it, who is on the other side of each
+topic or route, and other work linked by ticket, by what it touches or by author. A branch
+with no ticket key is briefed like any other. It is advisory and never fails a build; set
+`mode: siblings` for the old ticket-only comment.
 
 ```yaml
 - uses: Aglium/ledger-client@v0.1.0

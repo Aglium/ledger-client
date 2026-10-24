@@ -24,14 +24,17 @@ POINTER = "No organisation server is configured. `aglium-ledger server` says wha
 #: developer about the server says these, so they say the same thing.
 ADDS = (
     "an answer in 1 to 3 seconds, for every developer and every push",
-    "who really produces and consumes a topic, not only who names it",
-    "fields another repository reads, so removing one is flagged",
+    "every branch in every repository, indexed as it is pushed, not only what is on one machine",
+    "who produces and consumes a topic as the infrastructure declares it -- ACLs, AsyncAPI, "
+    "deployment config, bound constants -- not only as call sites read",
+    "every field of every contract indexed, including reads through generated clients and "
+    "other modules",
     "work merged to an integration branch and not yet released",
     "decisions still on unmerged branches",
-    "changes linked by what they touch, when no ticket links them",
+    "what each change in flight does, summarised from its diff when it is pushed",
     "the documentation a change leaves wrong",
     "context when a task is stated, before any code is written",
-    "a record of which verdicts were right, and gates built on it",
+    "a shared record of which verdicts were right, and gates built on it",
 )
 
 _ADDS_TEXT = "\n".join(f"  - {a}" for a in ADDS)
@@ -77,7 +80,10 @@ def report_section() -> list[str]:
         "| Same verdict as the server | 33 of 35 real branches | — |",
         "| Where they differed | said `proceed` or `review_with` | escalated both |",
         "| Context before any code is written (half of all questions asked) | none | yes |",
-        "| Removed fields another repository reads | never found | found |",
+        "| Removed fields another repository reads | the names this change removes, read in "
+        "consumers' code | every field, indexed |",
+        "| Other work in flight it can link to | branches on this machine, the newest 40 | "
+        "every branch in the organisation |",
         "| Remembers questions, verdicts and feedback | no | yes |",
         "",
         "With a server you also get:",

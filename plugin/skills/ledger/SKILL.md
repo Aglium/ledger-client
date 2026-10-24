@@ -104,5 +104,6 @@ aglium-ledger brief <repo> <ref> --json
 ## What it will not tell you
 
 It returns names, contracts, decisions and paths as evidence — never file contents. To see
-the code in another repo, open that repo. It links by ticket keys in branch names and PR
-titles, and by contract names found in code; work with neither is invisible to it.
+the code in another repo, open that repo. It links work by ticket keys, by topics and routes
+both changes name, by rare shared topics or tables, and lists the same author's nearby work as
+a question; work that shares none of these is invisible to it.

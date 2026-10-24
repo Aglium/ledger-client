@@ -409,10 +409,8 @@ class LiveIndex:
             if self.cache is not None:
                 self._uses_memo[key] = self.cache.uses(self.vcs, repo, ref)
             else:
-                from ledger.pipeline.scan import uses_of
-                self._uses_memo[key] = uses_of(discover(
-                    repo, self.vcs.list_tree(repo, ref), None,
-                    read_many=lambda ps: self.vcs.read_files(repo, ref, ps)))
+                from ledger.pipeline.scan import read_repo
+                self._uses_memo[key] = read_repo(self.vcs, repo, ref)[0]
         return self._uses_memo[key]
 
     def _use(self, repo: str, ref: str, contract) -> tuple | None:
@@ -654,7 +652,28 @@ class LiveIndex:
         return out
 
     def topics_bound_in(self, repo: str) -> dict:
-        return {}
+        """Topics `repo` reaches through a variable, from its own config and code.
+
+        `{ident: {"raws": set, "values": set}}`. Read from local git only: on a
+        forge API it would mean reading every file.
+        """
+        ref = self.repos.get(repo)
+        if ref is None:
+            return {}
+        key = ("bound", repo, ref)
+        if key not in self._uses_memo:
+            got: dict = {}
+            try:
+                if self.cache is not None:
+                    got = self.cache.bound(self.vcs, repo, ref)
+                else:
+                    from ledger.pipeline.scan import wiring_of
+                    got = wiring_of(self.vcs, repo, ref)[0]
+            except ForgeUnavailable:
+                got = {}
+            self._uses_memo[key] = {i: {"raws": set(v["raws"]), "values": set(v["values"])}
+                                    for i, v in got.items()}
+        return self._uses_memo[key]
 
     def behaviours(self, commits) -> dict:
         """No database, so no stored model summaries. Nothing is asked live:
@@ -926,6 +945,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
 
         deps = index.field_deps(sorted(candidates, key=lambda c: (c.surface.value, c.name)),
                                 exclude=repo)
+        about = dict(texts)
         if not deps and hasattr(index, "field_readers"):
             # No stored field layer: ask who reads the names this diff removes,
             # from the contracts the changed FILES name -- a deleted payload
@@ -934,12 +954,21 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
             named = set(candidates)
             for path, text in texts.items():
                 named |= {e.contract for e in discover_in_text(repo, path, text)}
+                if bound:           # a topic the file reaches through a constant
+                    from ledger.core.bindings import usages_in
+                    reached = {v for u in usages_in(path, text, {i: v["raws"] for i, v in bound.items()})
+                               for v in bound[u.ident]["values"]}
+                    named |= {ContractRef(Surface.TOPIC, v) for v in reached}
+                    if reached:
+                        # So `removed_fields` sees the file as about the topic
+                        # it never spells. Used for that check only.
+                        about[path] = text + "\n" + "\n".join(sorted(reached))
             gone = delta_of(repo, files).keys_removed
             deps = index.field_readers(sorted(named, key=lambda c: (c.surface.value, c.name)),
                                        gone, exclude=repo)
         if deps:
             wanted = {c: list(fields) for c, fields in deps.items()}
-            for gone in removed_fields(diffs, wanted, file_text=texts):
+            for gone in removed_fields(diffs, wanted, file_text=about):
                 breaks.append(FieldBreak(
                     surface=gone.contract.surface.value, name=gone.contract.name,
                     field_path=gone.field_path, readers=deps[gone.contract][gone.field_path],

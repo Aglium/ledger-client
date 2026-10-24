@@ -37,13 +37,22 @@ another repository?*
 
 | Label | What the evidence shows |
 |---|---|
-| conflict | The change removes a contract or field another repository uses, or an open decision governs what it touches |
-| dependency | The change and another repository face each other over a named contract, in a known direction |
+| conflict | The change removes a field or contract another repository reads, another change in flight that day removes what it uses (or uses what it removes), or an open decision governs what it touches |
+| dependency | The change and another repository, or another change in flight, face each other over a named topic or route, in a known direction |
 | correlation | A shared ticket, or the same name in both places. Worth a look, not yet evidence of a conflict |
 
-Without an organisation server most findings are dependency or correlation: the client reads
-names literally and has no field-level index. The label is there so nobody mistakes one for
-the other.
+Without an organisation server, directions come from call sites in the code and the fields
+another repository reads are looked up by name, literally: a field read through a generated
+client or another module is not seen. The label is there so nobody mistakes one kind of
+finding for another.
+
+### How in-flight work is linked
+
+Each change in flight that day is read as it stood that day, and linked to the change being
+replayed by, strongest first: a ticket key in its branch name, title or diff; a topic or route
+both diffs name; a topic, table or migration both touch that few other changes do. The same
+author starting work in another repository within two hours is listed as a question and never
+changes a verdict on its own.
 
 ## Grading the findings
 
@@ -65,7 +74,7 @@ can't-verify rates. Answers stay on this machine.
 
 - Rebased pull requests leave no trace in history and are not replayed.
 - A squash merge keeps no branch, so its start day is taken as the day it merged.
-- In-flight work is linked by the ticket key in a branch name or pull request title; links by
-  what two changes touch, with no ticket, need an organisation server.
+- Two changes that share nothing a diff names (a rating written in one service and read from
+  a table by another under a different name) are not linked without a ticket key.
 - It is an upper bound: it counts how often there was something to say. Only the people who
   did the work can say whether it mattered.

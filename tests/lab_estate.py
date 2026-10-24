@@ -1,6 +1,6 @@
 """A labelled estate for measuring what a replay finds without ticket keys.
 
-Ten repositories with real, dated git history. Each merged change carries the
+Twelve repositories with real, dated git history. Each merged change carries the
 answer a person who knew the work would give: whether Ledger should say
 something about another repository, and how strong that claim should be. Half
 the changes that matter carry no ticket key anywhere, which is the gap this
@@ -126,6 +126,15 @@ def _plan() -> list[tuple]:
         # Decoy: the same author, half an hour later, more documentation elsewhere.
         ("catalog", "catalog-docs", "ivan@example.com", (3, 10, 30), (2, 16, 0),
          {"docs/README.md": "Catalog serves product data.\n"}),
+        # No ticket, no topic name in either diff or file: both sides reach the
+        # topic through a constant bound in config. The producer drops a field
+        # the consumer reads.
+        ("notify", "slim-notification-payload", "kim@example.com", (5, 10, 0), (4, 15, 0),
+         {"app/send.py":
+          "def notify(n):\n"
+          "    producer.send(settings.NOTIFY_SENT_TOPIC, {\n"
+          "        \"notification_ref\": n.ref,\n"
+          "    })\n"}),
         # A producer drops a field that only an unrelated topic's reader uses.
         # Related to mailer over the topic; nothing of mailer's breaks.
         ("orders", "drop-total-cents", "carl@example.com", (2, 10, 0), (1, 15, 0),
@@ -149,6 +158,8 @@ LABELS: dict[str, Label] = {
     "rename-internal-helper": Label(False, why="the removed key is no contract's"),
     "fix-typo": Label(False, why="documentation only"),
     "catalog-docs": Label(False, why="same author, minutes apart, both documentation"),
+    "slim-notification-payload": Label(True, "conflict",
+                                       why="analytics reads recipient_ref, both through a bound constant"),
     "drop-total-cents": Label(True, "dependency",
                               why="mailer consumes the topic; total_cents is read only from "
                                   "another topic"),
@@ -203,6 +214,20 @@ def build(root: Path) -> Path:
                 "@consumer.subscribe(\"invoice.issued.v1\")\n"
                 "def on_invoice(payload):\n"
                 "    add_to_totals(payload[\"total_cents\"])\n"}),
+        "notify": _repo(src, "notify", {
+            "app/settings.py": "NOTIFY_SENT_TOPIC = \"notify.sent.v1\"\n",
+            "app/send.py":
+                "def notify(n):\n"
+                "    producer.send(settings.NOTIFY_SENT_TOPIC, {\n"
+                "        \"notification_ref\": n.ref,\n"
+                "        \"recipient_ref\": n.recipient,\n"
+                "    })\n"}),
+        "analytics": _repo(src, "analytics", {
+            "config/settings.yaml": "notify_sent_topic: notify.sent.v1\n",
+            "app/listen.py":
+                "@consumer.subscribe(settings.notify_sent_topic)\n"
+                "def on_sent(payload):\n"
+                "    count(payload[\"recipient_ref\"])\n"}),
         "billing": _repo(src, "billing", {
             "migrations/001_audit.sql": "CREATE TABLE audit_log (id int, actor text);\n"}),
     }

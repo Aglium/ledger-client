@@ -14,11 +14,12 @@ estate itself.
 | History | Reconstructed from the repositories you can read | Stored, including questions, verdicts and feedback |
 | Where it runs | Claude Code, the command line, CI | The same, for every developer and pipeline at once |
 | A brief | about 7 s warm, 18 to 25 s cold, on ~175 repositories | about 2 s |
-| Who produces and consumes a contract | Who names it | Who publishes, consumes or declares it |
-| Fields another repository reads | Not found | Found, so removing one is flagged |
+| Who produces and consumes a contract | Read from call sites in the code | Also as the infrastructure declares it: ACLs, AsyncAPI, deployment config, bound constants |
+| Fields another repository reads | The names this change removes, looked up in consumers' code | Every field of every contract, indexed, including reads through generated clients |
+| Changes that cannot both land | Found among branches on this machine | Found among every branch in the organisation |
 | Work merged to an integration branch, not released | Not seen | Seen |
 | Decisions still on unmerged branches | Not seen | Seen |
-| How in-flight work is linked | A ticket key in the branch name or written in the diff | Also the same author pushing minutes apart, and what the changes touch |
+| How in-flight work is linked | A ticket key; a topic or route both diffs name; a rare topic, table or migration both touch; the same author at the same time (listed, never a verdict) | The same rules over every branch, plus a summary of what each change does |
 | Context before any code is written | None | Yes |
 | Price | Free | Commercial; a four-week pilot is offered |
 
