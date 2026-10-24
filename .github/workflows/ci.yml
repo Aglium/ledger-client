@@ -24,7 +24,9 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Fetch with uvx, check prerequisites and coverage, replay
         env:
-          LEDGER_PACKAGE: "aglium-ledger[mcp] @ git+file://${{ github.workspace }}"
+          # A directory, not git+file: a CI checkout has no origin/HEAD, and uv
+          # cannot resolve a git URL without a default branch.
+          LEDGER_PACKAGE: "aglium-ledger[mcp] @ file://${{ github.workspace }}"
         run: |
           set -eu
           est=$(mktemp -d)
