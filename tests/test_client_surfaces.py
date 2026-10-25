@@ -13,7 +13,7 @@ from ledger.adapters.vcs.fake import FakeAdapter
 from ledger.config import Config
 from ledger.service import LedgerError, Unavailable
 from ledger.surfaces import hook as h
-from ledger.surfaces.mcp import LIVE_NOTE, LiveBackend, build_server
+from ledger.surfaces.mcp import LIVE_NOTE, NOT_SET_UP, LiveBackend, SetupBackend, build_server
 
 ADR = """---
 id: "0001"
@@ -108,6 +108,35 @@ class TestMcp:
     def test_an_error_arrives_as_data(self, backend):
         got = self.call(build_server(backend), "who_owns", {"surface": "queue", "name": "x"})
         assert "unknown surface" in got["error"]
+
+
+class TestBeforeSetup:
+    """The plugin starts the MCP server on install, before anyone runs setup."""
+
+    def missing(self):
+        raise FileNotFoundError("no ledger config found")
+
+    def test_the_server_starts_and_lists_its_tools_without_a_config(self):
+        srv = build_server(SetupBackend(self.missing, lambda cfg: None))
+        assert len(asyncio.run(srv.list_tools())) == 5
+
+    def test_each_tool_says_how_to_set_up(self):
+        srv = build_server(SetupBackend(self.missing, lambda cfg: None))
+        got = TestMcp().call(srv, "brief", {"repo": "orders", "ref": "main"})
+        assert got["error"] == NOT_SET_UP and "/ledger:setup" in got["error"]
+
+    def test_the_config_is_picked_up_once_setup_has_written_it(self, tmp_path):
+        p = tmp_path / "ledger.yml"
+        vcs = estate()
+
+        def load():
+            return Config.load(str(p))
+
+        b = SetupBackend(load, lambda cfg: LiveBackend(cfg, lambda: [vcs]))
+        with pytest.raises(LedgerError):
+            b.who_owns("table", "order_line")
+        p.write_text("org: testorg\nproject_keys: [ABC]\nintegration_branches: []\n")
+        assert [r["repo"] for r in b.who_owns("table", "order_line")["repos"]] == ["billing", "orders"]
 
 
 class TestRemote:

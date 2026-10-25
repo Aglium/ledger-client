@@ -176,6 +176,46 @@ class LiveBackend:
                         "`aglium-ledger feedback summary` shows the totals."}
 
 
+NOT_SET_UP = ("Ledger is not set up on this machine yet. Run /ledger:setup in Claude Code, or "
+              "`aglium-ledger init` inside one of your organisation's repositories, then ask again.")
+
+
+class SetupBackend:
+    """Reads the config on first use, not at start.
+
+    A plugin starts its MCP server as soon as it is installed, before anyone has
+    run setup. Starting without a config keeps the server up, answers each tool
+    with what to do, and picks the config up once setup has written it.
+    """
+
+    def __init__(self, load: Callable[[], Config], make: Callable[[Config], Backend]):
+        self.load, self.make, self.backend = load, make, None
+
+    def _ready(self) -> Backend:
+        if self.backend is None:
+            try:
+                cfg = self.load()
+            except FileNotFoundError:
+                raise LedgerError(NOT_SET_UP) from None
+            self.backend = self.make(cfg)
+        return self.backend
+
+    def brief(self, repo, ref):
+        return self._ready().brief(repo, ref)
+
+    def inflight_for(self, ticket):
+        return self._ready().inflight_for(ticket)
+
+    def who_owns(self, surface, name):
+        return self._ready().who_owns(surface, name)
+
+    def decisions_for(self, ticket, contract, repo):
+        return self._ready().decisions_for(ticket, contract, repo)
+
+    def feedback(self, verdict, note, event_id, repo, ref, tool):
+        return self._ready().feedback(verdict, note, event_id, repo, ref, tool)
+
+
 def _call(fn: Callable[[], Any]) -> Any:
     """Tool errors as data. An agent reading {"error": ...} can correct its
     input; an exception becomes a generic failure it cannot act on."""

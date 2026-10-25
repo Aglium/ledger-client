@@ -772,12 +772,14 @@ def mcp_server(
     the estate live: slower, and without what only a stored index knows.
     Nothing is written to stdout except the protocol.
     """
-    from ledger.surfaces.mcp import LiveBackend, RemoteBackend, build_server
+    from ledger.surfaces.mcp import LiveBackend, RemoteBackend, SetupBackend, build_server
 
-    cfg = _load_config(config)
     url = os.environ.get("LEDGER_URL")
+    # Without a config the server still starts: the plugin launches it on install,
+    # before setup, and each tool then says how to set Ledger up.
     backend = (RemoteBackend(url, os.environ.get("LEDGER_API_TOKEN")) if url and not local_root
-               else LiveBackend(cfg, lambda: _adapters(cfg, local_root)))
+               else SetupBackend(lambda: Config.load(config),
+                                 lambda cfg: LiveBackend(cfg, lambda: _adapters(cfg, local_root))))
     try:
         srv = build_server(backend)
     except LedgerError as e:
