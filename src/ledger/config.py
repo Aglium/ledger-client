@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from ledger.core.branches import DEFAULT_RULES, BranchRules, validate_branches
 from ledger.core.declarations import FORMATS
 from ledger.core.gate import validate_enforce
 from ledger.core.tickets import validate_keys
@@ -93,6 +94,12 @@ class Config:
     #: contain contract names, and they were showing up as real contract
     #: evidence in briefs about other repos.
     exclude_repos: tuple[str, ...] = ()
+    #: Which branches count as other work in flight (`watch`, `ignore`), in
+    #: GitLab's pattern syntax. See ledger.core.branches.
+    branches: BranchRules = DEFAULT_RULES
+    #: Whether the file said `branches` itself. Only then are the rules sent to
+    #: an organisation server, which narrows its answer to them.
+    branches_set: bool = False
     comment_marker: str = "ledger:siblings"
     #: Verdict classes a gate fails on. Empty: everything is advisory.
     enforce: tuple[str, ...] = ()
@@ -190,6 +197,8 @@ class Config:
             project_keys=validate_keys(list(raw.get("project_keys") or [])),
             liveness_days=liveness,
             exclude_repos=tuple(raw.get("exclude_repos") or ()),
+            branches=validate_branches(raw.get("branches")),
+            branches_set="branches" in raw,
             integration_branches=tuple(raw.get("integration_branches") or ("stage", "staging", "develop")),
             comment_marker=raw.get("comment_marker", "ledger:siblings"),
             enforce=validate_enforce(raw.get("enforce")),

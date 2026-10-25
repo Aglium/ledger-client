@@ -598,6 +598,8 @@ def http_brief(url: str, token: str | None, timeout: float,
                                     **({"worktree": "1"} if worktree else {}),
                                     **({"new": "1"} if allow_missing_ref else {})})
         req = urllib.request.Request(f"{url.rstrip('/')}/brief?{q}")
+        from ledger import remote
+        remote.decorate(req)
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         with urllib.request.urlopen(req, timeout=timeout) as r:

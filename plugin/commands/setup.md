@@ -14,8 +14,14 @@ the user knowing exactly what Ledger can see.
 2. Run `"${CLAUDE_PLUGIN_ROOT}/scripts/ledger-run.sh" init --dry-run` and show the user the
    config it would write: the organisation, the forge, the ticket keys it found, and where the
    estate is. Read out any `note:` lines; they say what could not be derived.
-3. Ask whether the ticket keys and the organisation look right. If the user corrects
-   something, say that they can edit the file after it is written.
+3. Ask whether the ticket keys and the organisation look right. Then show the `branches`
+   block: every branch is watched except those under `ignore` (long-lived lines such as
+   `main`/`master`/`develop`, release trains, dependency bots). Read out the note on branch
+   prefixes and ask whether some should be left out, or whether only some should be watched
+   (`watch: ["feature/*", "bugfix/*"]`). Patterns are exact names or `*` wildcards, as in
+   GitLab; ignore wins over watch; a repository's own default branch is never a change,
+   whatever it is called. If the user corrects something, say that they can edit the file
+   after it is written, and offer to make the edit for them once it is.
 4. Run `"${CLAUDE_PLUGIN_ROOT}/scripts/ledger-run.sh" init` to write it. If a config already
    exists, say so and continue with it unless the user asks to replace it (`--force`).
 5. If the config has a `mirror_root`, explain that `aglium-ledger mirrors` clones every

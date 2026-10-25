@@ -118,7 +118,8 @@ class LiveBackend:
         cfg = self.cfg
         got = collect(self.adapters(), cfg.project_keys, liveness_days=cfg.liveness_days,
                       integration_branches=cfg.integration_branches,
-                      exclude_repos=cfg.exclude_repos)
+                      exclude_repos=cfg.exclude_repos,
+                      branches=cfg.branches)
         changes = [{
             "repo": c.repo, "ref": c.ref, "kind": c.kind, "pr_number": c.pr_number,
             "title": c.title, "author": c.author, "url": c.url,

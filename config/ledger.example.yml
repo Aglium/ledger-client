@@ -26,6 +26,27 @@ integration_branches: [stage, staging, develop]
 # as real contract evidence).
 exclude_repos: []
 
+# Which branches count as somebody's work in flight. One syntax for both
+# lists, GitLab's: an exact name (`main`) or a pattern with `*` wildcards
+# (`release/*`, `*-stable`); `*` matches anything, `/` included, and case does
+# not matter. A branch is watched when it matches `watch` and nothing in
+# `ignore` -- ignore wins. A list you write replaces the default list, so copy
+# the defaults below and edit them.
+#
+# A repository's own default branch is the base, never a change, whatever it is
+# called (main in one repository, master in the next). `integration_branches`
+# are read as integrated work by name, whatever these lists say, and a brief on
+# the branch you are on always runs.
+#
+# With an organisation server (LEDGER_URL), the server's own `branches` decide
+# what is indexed, what a verdict weighs and what a gate fails on. Rules written
+# here are sent with each question and only narrow what you are shown: they
+# cannot bring back a branch the organisation leaves out.
+branches:
+  watch: ["*"]                  # e.g. ["feature/*", "bugfix/*", "ABC-*"]
+  ignore: [main, master, develop, development, stage, staging, prod, production,
+           "release/*", "land/*", "port/*", "dependabot/*", "renovate/*"]
+
 comment_marker: "ledger:siblings"
 
 # Verdict classes a gate fails on. Empty, the default: everything is advisory,

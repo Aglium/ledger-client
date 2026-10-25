@@ -16,10 +16,32 @@ from ledger.service import LedgerError, Unavailable
 
 TIMEOUT = 20.0
 
+#: This developer's own `branches` rules, sent with every question. The
+#: organisation's rules on the server still decide what is indexed and what a
+#: gate sees; these can only take away from an answer, never add to it. A
+#: server that predates them ignores the header, and the answer is unnarrowed.
+BRANCHES_HEADER = "X-Ledger-Branches"
+_preferences: dict[str, str] = {}
+
+
+def use_config(cfg) -> None:
+    """Send this config's preferences with every request from now on."""
+    _preferences.clear()
+    if getattr(cfg, "branches_set", False):
+        _preferences[BRANCHES_HEADER] = json.dumps(cfg.branches.as_config(),
+                                                   separators=(",", ":"))
+
+
+def decorate(req: urllib.request.Request) -> urllib.request.Request:
+    for name, value in _preferences.items():
+        req.add_header(name, value)
+    return req
+
 
 def _send(req: urllib.request.Request, token: str | None, timeout: float) -> dict:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    decorate(req)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())

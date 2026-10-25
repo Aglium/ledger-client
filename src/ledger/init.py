@@ -20,6 +20,8 @@ from pathlib import Path
 
 import yaml
 
+from ledger.core.branches import DEFAULT_IGNORE, DEFAULT_WATCH, matches
+
 #: host -> the forge adapter that reads it. A forge not listed here has no
 #: adapter, and a config naming it would fail at the first command.
 FORGES = {"github.com": "github", "bitbucket.org": "bitbucket"}
@@ -44,6 +46,41 @@ NOT_A_KEY = frozenset({
 #: A key has to recur to be the team's convention rather than a stray match.
 MIN_KEY_USES = 3
 INTEGRATION_CANDIDATES = ("stage", "staging", "develop")
+
+#: Bots that open branches nobody wrote, added to `ignore` only when this
+#: machine has one: the defaults already cover Dependabot and Renovate.
+BOT_PATTERNS = ("snyk-*", "greenkeeper/*", "pre-commit-ci-*", "imgbot", "deepsource-*")
+
+
+def branch_names(repo: Path) -> list[str]:
+    """Local and remote-tracking branch names, without `refs/heads/` or `origin/`."""
+    out = []
+    for ref in _git(repo, "for-each-ref", "--format=%(refname)", "refs/heads",
+                    "refs/remotes").splitlines():
+        if ref.startswith("refs/heads/"):
+            out.append(ref[len("refs/heads/"):])
+        elif ref.startswith("refs/remotes/"):
+            name = ref[len("refs/remotes/"):].partition("/")[2]
+            if name and name != "HEAD":
+                out.append(name)
+    return out
+
+
+def branch_rules(names, *, top: int = 5) -> tuple[dict, str | None]:
+    """The `branches` block to write, and a note on what the branches here look like."""
+    ignore = list(DEFAULT_IGNORE)
+    for bot in BOT_PATTERNS:
+        if any(matches(bot, n) for n in names):
+            ignore.append(bot)
+    prefixes: Counter = Counter(n.split("/", 1)[0] + "/*" for n in set(names) if "/" in n)
+    if not prefixes:
+        return {"watch": list(DEFAULT_WATCH), "ignore": ignore}, None
+    shown = ", ".join(f"{p} ({n}{', ignored' if any(matches(i, p[:-1] + 'x') for i in ignore) else ''})"
+                      for p, n in prefixes.most_common(top))
+    note = (f"Branch names here start with {shown}. Every branch is watched except those under "
+            "`branches.ignore`; to watch only some, list them under `branches.watch` "
+            "(exact names or `*` patterns, as in GitLab).")
+    return {"watch": list(DEFAULT_WATCH), "ignore": ignore}, note
 
 
 @dataclass
@@ -128,9 +165,11 @@ def plan(start: str | Path, *, mirror_base: str = "~/.ledger/mirrors") -> Plan:
     siblings = sibling_checkouts(root)
 
     texts: list[str] = []
+    names: list[str] = []
     for repo in [root, *siblings[:30]]:
-        texts += _git(repo, "for-each-ref", "--format=%(refname:short)",
-                      "refs/heads", "refs/remotes").splitlines()
+        here = branch_names(repo)
+        names += here
+        texts += here
         texts += _git(repo, "log", "-400", "--all", "--format=%s").splitlines()
     keys = guess_keys(texts)
     if not keys:
@@ -144,6 +183,9 @@ def plan(start: str | Path, *, mirror_base: str = "~/.ledger/mirrors") -> Plan:
     cfg: dict = {"org": (remote.namespace.split("/")[0] if remote else root.parent.name),
                  "project_keys": keys, "liveness_days": 30,
                  "integration_branches": integration or list(INTEGRATION_CANDIDATES)}
+    cfg["branches"], branch_note = branch_rules(names)
+    if branch_note:
+        notes.append(branch_note)
     if siblings:
         cfg["local_root"] = str(root.parent)
     else:

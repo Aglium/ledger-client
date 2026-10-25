@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from ledger.adapters.vcs.base import ForgeUnavailable, VcsAdapter
+from ledger.core.branches import DEFAULT_RULES, BranchRules
 from ledger.core.join import Change
 from ledger.core.tickets import extract_tickets
 
@@ -27,6 +28,8 @@ class Collection:
     partial: bool = False
     missing_sources: tuple[str, ...] = ()
     errors: list[str] = field(default_factory=list)
+    #: Branches and pull requests left out by `branches.watch`/`branches.ignore`.
+    branches_ignored: int = 0
 
 
 #: How far back to read a branch's own commits for a ticket key. A topic
@@ -87,6 +90,7 @@ def collect(
     liveness_days: int = 30,
     integration_branches: tuple[str, ...] = (),
     exclude_repos: tuple[str, ...] = (),
+    branches: BranchRules = DEFAULT_RULES,
     now: datetime | None = None,
 ) -> Collection:
     now = now or datetime.now(timezone.utc)
@@ -112,6 +116,9 @@ def collect(
 
             try:
                 for p in adapter.list_open_pulls(repo.full_name):
+                    if not branches.allows(p.head_ref):
+                        out.branches_ignored += 1
+                        continue
                     # The branch name, the PR title and the description all
                     # carry ticket ids, and they disagree often enough to be
                     # worth unioning. The description is free: both forges
@@ -133,6 +140,9 @@ def collect(
                 pr_refs = {c.ref for c in out.changes if c.repo == repo.full_name}
                 for b in adapter.list_branches(repo.full_name, since=since):
                     if b.name in pr_refs or b.name == repo.default_branch:
+                        continue
+                    if not branches.allows(b.name):
+                        out.branches_ignored += 1
                         continue
                     tickets = extract_tickets(b.name, project_keys)
                     # What the branch name does not say, the commits do.

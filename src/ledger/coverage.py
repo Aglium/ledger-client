@@ -182,7 +182,7 @@ def survey(cfg: Config, vcs, *, days: int = 90, forge: list | None = None) -> Co
             resolved = vcs._resolve(p, ref.default_branch)
             last = rp._git(p, "log", "-1", "--date=short", "--format=%cd", resolved).strip()
             seen.last_commit = date.fromisoformat(last) if last else None
-            _, h = rp._history(p, ref.full_name, resolved, cfg.project_keys, since)
+            _, h = rp._history(p, ref.full_name, resolved, cfg.project_keys, since, cfg.branches)
             seen.pull_requests, seen.other_commits = h.merges + h.squashes, h.other
             if vcs._bare(p):
                 seen.fetched_days_ago = _fetched_days_ago(p)

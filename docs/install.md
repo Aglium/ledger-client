@@ -46,6 +46,22 @@ aglium-ledger replay
 Without mirrors, point Ledger at clones you already have: `local_root: ~/src/your-org` in the
 config, or `--local-root` on any command.
 
+## Which branches Ledger watches
+
+`branches` in the config decides which branches count as other work in flight. Both lists take
+exact names or `*` patterns, the way GitLab's protected branches do, and ignore wins:
+
+```yaml
+branches:
+  watch: ["feature/*", "bugfix/*"]      # default ["*"]: everything
+  ignore: [main, master, develop, "release/*", "dependabot/*"]
+```
+
+`init` writes the defaults out (long-lived lines, release trains, dependency bots) and notes the
+branch prefixes it found, so you can edit the list instead of starting from nothing. A
+repository's own default branch is never treated as a change, whether it is `main` or `master`;
+`integration_branches` are read by name either way.
+
 ## Credentials
 
 | Forge | Listing repositories and commenting | Cloning |

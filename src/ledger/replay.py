@@ -36,7 +36,7 @@ from ledger.config import Config
 from ledger.core.join import Change, find_siblings
 from ledger.core.tickets import extract_tickets
 from ledger.pipeline.scan import ScanCache, read_repo
-from ledger.pipeline.signals import NOT_A_CHANGE
+from ledger.core.branches import DEFAULT_RULES, BranchRules
 
 #: GitHub and Bitbucket word their merge commits differently; both name the branch.
 _MERGE = (re.compile(r"Merge pull request #(?P<pr>\d+) from [^/\s]+/(?P<ref>\S+)"),
@@ -213,7 +213,8 @@ def _git(path: Path, *args: str, timeout: float = 60) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
-def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[Merged], RepoHistory]:
+def _history(path: Path, repo: str, ref: str, keys, since: date,
+             branches: BranchRules = DEFAULT_RULES) -> tuple[list[Merged], RepoHistory]:
     """Every pull request merged into a branch since a date, and what else landed there."""
     out: list[Merged] = []
     seen = RepoHistory(repo)
@@ -237,7 +238,7 @@ def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[M
                          f"{base_sha}..{head_sha}").splitlines()
             who = _git(path, "log", "-1", "--format=%ae", head_sha).strip()
             branch = m.group("ref")
-            if NOT_A_CHANGE.match(branch):
+            if not branches.allows(branch):
                 continue            # a release train merging forward is not somebody's change
             seen.merges += 1
             out.append(Merged(
@@ -254,7 +255,7 @@ def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[M
             seen.other += 1
             continue
         branch = bb.group("ref") if bb else f"pr-{gh.group('pr')}"
-        if bb and NOT_A_CHANGE.match(branch):
+        if bb and not branches.allows(branch):
             continue
         pr = int((bb or gh).group("pr"))
         who = _git(path, "log", "-1", "--format=%ae", sha).strip()
@@ -268,9 +269,10 @@ def _history(path: Path, repo: str, ref: str, keys, since: date) -> tuple[list[M
     return out, seen
 
 
-def merged_in(path: Path, repo: str, ref: str, keys, since: date) -> list[Merged]:
+def merged_in(path: Path, repo: str, ref: str, keys, since: date,
+              branches: BranchRules = DEFAULT_RULES) -> list[Merged]:
     """Every pull request merged into a branch since a date, with the change it closed."""
-    return _history(path, repo, ref, keys, since)[0]
+    return _history(path, repo, ref, keys, since, branches)[0]
 
 
 def as_of(vcs: LocalGitAdapter, repos: dict[str, str], day: date,
@@ -480,7 +482,8 @@ def run(cfg: Config, vcs: LocalGitAdapter, *, since: date, author: str | None,
     for repo, default in repos.items():
         try:
             p = vcs._path(repo)
-            got, seen = _history(p, repo, vcs._resolve(p, default), cfg.project_keys, horizon)
+            got, seen = _history(p, repo, vcs._resolve(p, default), cfg.project_keys, horizon,
+                                 cfg.branches)
         except Exception as e:                          # noqa: BLE001 -- one repo, not the replay
             history.append(RepoHistory(repo, error=f"{type(e).__name__}: {e}"[:160]))
             continue

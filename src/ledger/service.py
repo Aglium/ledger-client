@@ -41,7 +41,7 @@ from ledger.core.tickets import extract_tickets
 from ledger.pipeline.collect import collect
 from ledger.pipeline.decisions import load_decisions
 from ledger.pipeline.scan import ScanCache
-from ledger.pipeline.signals import NOT_A_CHANGE
+from ledger.core.branches import DEFAULT_RULES
 
 
 class LedgerError(Exception):
@@ -555,8 +555,9 @@ class LiveIndex:
 
     def use_changes(self, changes, cfg: Config | None = None) -> None:
         """The work in flight this brief may link to, as the caller enumerated it."""
+        rules = cfg.branches if cfg is not None else DEFAULT_RULES
         self._population = [c for c in changes
-                            if c.kind != "integration" and not NOT_A_CHANGE.match(c.ref)]
+                            if c.kind != "integration" and rules.allows(c.ref)]
         self._cfg = cfg
 
     def _others(self, exclude_repo: str | None) -> list[Change]:
@@ -774,7 +775,8 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     if result is None:
         got = collected or collect(adapters, cfg.project_keys, liveness_days=cfg.liveness_days,
                                    integration_branches=cfg.integration_branches,
-                                   exclude_repos=cfg.exclude_repos)
+                                   exclude_repos=cfg.exclude_repos,
+                                   branches=cfg.branches)
         subject = next((c for c in got.changes if c.repo == repo and c.ref == ref), None)
         if subject is None:
             # The ref exists (resolved above) but is outside the liveness window
@@ -1073,11 +1075,11 @@ def impact_delta(cfg: Config, vcs: VcsAdapter, repos: dict[str, str], index, rep
     """The `Delta` of one in-flight change and the base it was read against,
     or `(None, None)` when its diff cannot be read. Cached by commit."""
     from ledger.core.effect import delta_of
-    from ledger.pipeline.signals import DIFF_LIMIT, NOT_A_CHANGE
+    from ledger.pipeline.signals import DIFF_LIMIT
 
     # A release train's diff is everything unreleased in its repository. That
     # is not what one change does, and it is megabytes.
-    if not vcs.supports_diffs or (kind != "integration" and NOT_A_CHANGE.match(ref)):
+    if not vcs.supports_diffs or (kind != "integration" and not cfg.branches.allows(ref)):
         return None, None
     try:
         pair = (index.diff_range(repo, ref, kind, sha) if hasattr(index, "diff_range")

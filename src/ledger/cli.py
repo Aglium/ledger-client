@@ -290,7 +290,8 @@ def scan(
     days = liveness_days or cfg.liveness_days
     got = collect(_adapters(cfg, local_root), cfg.project_keys, liveness_days=days,
                   integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos)
+                  exclude_repos=cfg.exclude_repos,
+                  branches=cfg.branches)
 
     by_ticket: dict[str, set[str]] = {}
     for c in got.changes:
@@ -300,6 +301,8 @@ def scan(
 
     typer.echo(f"liveness_days={days}  repos={got.repos_seen}  ticketed changes={len(got.changes)}")
     typer.echo(f"tickets={len(by_ticket)}  spanning >1 repo={len(spread)}")
+    if got.branches_ignored:
+        typer.echo(f"branches left out by `branches` rules={got.branches_ignored}")
     if got.partial:
         typer.secho(f"PARTIAL — missing: {', '.join(got.missing_sources)}", fg="yellow")
     for t, repos in sorted(spread.items(), key=lambda kv: (-len(kv[1]), kv[0])):
@@ -323,7 +326,8 @@ def explain(
         _resolve_subject(cfg, _vcs, repo, ref)
     got = collect(_adapters_, cfg.project_keys, liveness_days=cfg.liveness_days,
                   integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos)
+                  exclude_repos=cfg.exclude_repos,
+                  branches=cfg.branches)
 
     subject = next((c for c in got.changes if c.repo == repo and c.ref == ref), None)
     if subject is None:
@@ -562,7 +566,8 @@ def overlap(
     adapters = _adapters(cfg, local_root)
     got = collect(adapters, cfg.project_keys, liveness_days=liveness_days or cfg.liveness_days,
                   integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos)
+                  exclude_repos=cfg.exclude_repos,
+                  branches=cfg.branches)
     scan = scan_signals(adapters, got)
 
     hits = overlaps_for((repo, ref), scan, min_score=min_score)
@@ -598,7 +603,8 @@ def benchmark(
     adapters = _adapters(cfg, local_root)
     got = collect(adapters, cfg.project_keys, liveness_days=liveness_days or cfg.liveness_days,
                   integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos)
+                  exclude_repos=cfg.exclude_repos,
+                  branches=cfg.branches)
     scan = scan_signals(adapters, got)
     comparisons = compare_arms(got, scan, min_score=min_score)
 
@@ -735,7 +741,8 @@ def comment(
     adapters = _adapters(cfg, local_root)
     got = collect(adapters, cfg.project_keys, liveness_days=cfg.liveness_days,
                   integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos)
+                  exclude_repos=cfg.exclude_repos,
+                  branches=cfg.branches)
     subject = next((c for c in got.changes if c.repo == repo and c.ref == ref), None)
     if subject is None:
         subject = Change(repo=repo, ref=ref, tickets=tuple(extract_tickets(ref, cfg.project_keys)),
@@ -777,6 +784,12 @@ def mcp_server(
     url = os.environ.get("LEDGER_URL")
     # Without a config the server still starts: the plugin launches it on install,
     # before setup, and each tool then says how to set Ledger up.
+    if url and not local_root:
+        from ledger import remote
+        try:
+            remote.use_config(Config.load(config))
+        except Exception:                               # noqa: BLE001 -- no config: nothing to narrow
+            pass
     backend = (RemoteBackend(url, os.environ.get("LEDGER_API_TOKEN")) if url and not local_root
                else SetupBackend(lambda: Config.load(config),
                                  lambda cfg: LiveBackend(cfg, lambda: _adapters(cfg, local_root))))
@@ -838,6 +851,7 @@ def _hook_context(cfg: Config, surface: str):
         url = os.environ.get("LEDGER_URL")
         if not url:
             raise LedgerError("context needs the organisation server: set LEDGER_URL")
+        remote.use_config(cfg)
         return remote.post(url, os.environ.get("LEDGER_API_TOKEN"), "/context",
                            {"text": text, "repo": repo, "via": surface})
     return go
@@ -863,6 +877,7 @@ def _remote_brief(cfg: Config, url: str, surface: str, timeout: float, worktree:
     from ledger import remote
     from ledger.surfaces import hook as h
 
+    remote.use_config(cfg)
     token = os.environ.get("LEDGER_API_TOKEN")
     ask = h.http_brief(url, token, timeout, via=surface,
                        worktree=worktree and _same_machine(url),

@@ -32,8 +32,6 @@ pairs to 64, and what survives is three communication repositories sharing
 
 from __future__ import annotations
 
-import re
-
 from ledger.core.overlap import DiffFile, Kind, extract_signals
 
 #: Bump when the answer would change: the kinds stored, the extraction in
@@ -46,14 +44,9 @@ SIGNALS_VERSION = "s2"   # filenames and Helm keys are no longer topics; prose i
 #: 6,620 that chose this.
 STORED_KINDS = (Kind.EVENT, Kind.TABLE, Kind.MIGRATION)
 
-#: A ref that is not somebody's change: a release train, a merge-prep branch.
-#: Its diff is everything unreleased in the repository, so its signals are the
-#: repository's rather than a change's -- and the diff tail is these, too:
-#: median branch diff 87 KB, and the two largest in the estate are `stage`
-#: branches at 11.6 MB and 5.6 MB.
-NOT_A_CHANGE = re.compile(
-    r"\A(stage|staging|master|main|develop|development|prod|production)\Z"
-    r"|\A(release|hotfix|land|port)/", re.I)
+#: Which refs are somebody's change is configurable now: `branches` in the
+#: config, defaults in ledger.core.branches.DEFAULT_IGNORE (release trains,
+#: long-lived lines, dependency bots).
 
 #: Diff bytes read per change. The p90 branch is 1.8 MB and the largest 11.6;
 #: past this the change is a vendored drop or a generated-file sweep, and its
