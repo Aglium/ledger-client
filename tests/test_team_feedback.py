@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import click
 from typer.testing import CliRunner
 
 from ledger.adapters.vcs.base import RepoRef
@@ -136,7 +137,7 @@ class TestAsk:
     def test_commands_exist(self):
         out = CliRunner().invoke(app, ["ask", "--help"], env={"COLUMNS": "200"})
         for cmd in ("inflight", "owners", "decisions"):
-            assert cmd in out.output
+            assert cmd in click.unstyle(out.output)
 
     def test_decisions_needs_something_to_match(self):
         assert CliRunner().invoke(app, ["ask", "decisions"]).exit_code == 2

@@ -246,8 +246,9 @@ class TestBaseAndWorktreeReachTheServer:
         from typer.testing import CliRunner
 
         from ledger.cli import app
+        import click
         out = CliRunner().invoke(app, ["brief", "--help"], env={"COLUMNS": "200"})
-        assert "--base" in out.output
+        assert "--base" in click.unstyle(out.output)     # CI forces colour; option names come styled
 
 
 class TestIntegrationBranchesAreNeverChanges:
