@@ -60,7 +60,8 @@ branches:
 `init` writes the defaults out (long-lived lines, release trains, dependency bots) and notes the
 branch prefixes it found, so you can edit the list instead of starting from nothing. A
 repository's own default branch is never treated as a change, whether it is `main` or `master`;
-`integration_branches` are read by name either way.
+`integration_branches` take the same patterns (`release/*` by default) and are read as integrated,
+not-yet-released work whatever `ignore` says, so a release branch still links by ticket.
 
 ## Credentials
 

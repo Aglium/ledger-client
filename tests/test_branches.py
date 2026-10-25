@@ -171,3 +171,30 @@ class TestSentToTheServer:
         remote.use_config(self._cfg(tmp_path, ""))
         req = remote.decorate(urllib.request.Request("http://x/brief"))
         assert not req.header_items()
+
+
+class TestReleaseBranchesAreIntegratedWork:
+    def test_patterns_expand_to_live_branches(self):
+        from ledger.core.branches import expand_integration
+        got = expand_integration(("stage", "release/*"), ["release/1.4", "feat/x", "release/1.5"])
+        assert got == ("stage", "release/1.4", "release/1.5")
+
+    def test_a_ticket_going_out_in_a_release_still_links(self):
+        from ledger.adapters.vcs.base import CommitRef
+        a = _adapter()
+        a._branches[R].append(BranchRef(repo=R, name="release/1.4", head_sha="c" * 40,
+                                        updated_at=NOW, author="rm@x"))
+        a._commits[(R, "release/1.4")] = [CommitRef(
+            sha="d" * 40, subject="Merge ABC-3 totals", author="b@x", when=NOW,
+            merged_ref="feat/abc-3-totals")]
+        got = collect([a], KEYS, integration_branches=("release/*",), now=NOW)
+        row = next(c for c in got.changes if c.ref == "feat/abc-3-totals")
+        assert row.kind == "integration" and row.integration_ref == "release/1.4"
+        assert "release/1.4" not in {c.ref for c in got.changes}
+
+    def test_default_includes_release(self, tmp_path):
+        p = tmp_path / "ledger.yml"
+        p.write_text("org: acme\nproject_keys: [ABC]\n")
+        cfg = Config.load(p)
+        assert "release/*" in cfg.integration_branches
+        assert "release/*" not in cfg.integration_names

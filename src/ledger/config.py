@@ -88,7 +88,7 @@ class Config:
     #: not in the default branch are in flight: written, merged, not yet in
     #: production. Modelling only topic branches misses an entire release train
     #: -- an active integration branch routinely carries hundreds of them.
-    integration_branches: tuple[str, ...] = ("stage", "staging", "develop")
+    integration_branches: tuple[str, ...] = ("stage", "staging", "develop", "release/*")
     #: Repos to leave out of the estate. The ledger's own repo belongs here when
     #: it is checked out alongside the repos it indexes: its test fixtures
     #: contain contract names, and they were showing up as real contract
@@ -129,6 +129,13 @@ class Config:
     #: them itself, so nobody has to clone anything for it. Bare mirrors: no
     #: working trees, a fifth of the disk, every read still works.
     mirror_root: str | None = None
+
+    @property
+    def integration_names(self) -> tuple[str, ...]:
+        """The integration branches named outright. Patterns (`release/*`) are
+        expanded per repository where branches are enumerated; elsewhere a
+        pattern names no branch and is left out."""
+        return tuple(b for b in self.integration_branches if "*" not in b)
 
     @staticmethod
     def resolve_path(path: str | Path | None = None) -> Path:
@@ -199,7 +206,7 @@ class Config:
             exclude_repos=tuple(raw.get("exclude_repos") or ()),
             branches=validate_branches(raw.get("branches")),
             branches_set="branches" in raw,
-            integration_branches=tuple(raw.get("integration_branches") or ("stage", "staging", "develop")),
+            integration_branches=tuple(raw.get("integration_branches") or ("stage", "staging", "develop", "release/*")),
             comment_marker=raw.get("comment_marker", "ledger:siblings"),
             enforce=validate_enforce(raw.get("enforce")),
             forges=[ForgeConfig(**f) for f in (raw.get("forges") or [])],

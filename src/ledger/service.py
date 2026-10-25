@@ -326,7 +326,7 @@ def resolve_subject(cfg: Config, vcs: VcsAdapter, repo: str, ref: str, *,
         except ForgeUnavailable:
             pass            # not a branch this repository has: work it out instead
     ahead: dict[str, int] = {}
-    for cand in [default, *[b for b in cfg.integration_branches if b != default]]:
+    for cand in [default, *[b for b in cfg.integration_names if b != default]]:
         try:
             ahead[cand] = vcs.commits_ahead(repo, cand, ref)
         except ForgeUnavailable:
@@ -984,7 +984,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                     contract_docs=index.documented_in(touched),
                     contract_fields={c: v for c, v in index.fields_of(touched, exclude=repo).items()
                                      if owners.get(c)},
-                    integration_branches=tuple(cfg.integration_branches),
+                    integration_branches=cfg.integration_names,
                     resolved=True, base=subj.base,
                     own_commits=None if missing_ref else subj.own_commits,
                     uncommitted=[f.path for f in pending])
@@ -1060,7 +1060,7 @@ def _impact_base(cfg: Config, vcs: VcsAdapter, repos: dict[str, str], repo: str,
     if default is None:
         return None
     ahead: dict[str, int] = {}
-    for cand in [default, *[x for x in cfg.integration_branches if x != default]]:
+    for cand in [default, *[x for x in cfg.integration_names if x != default]]:
         try:
             ahead[cand] = vcs.commits_ahead(repo, cand, ref)
         except ForgeUnavailable:

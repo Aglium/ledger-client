@@ -103,3 +103,23 @@ def validate_branches(raw) -> BranchRules:
     if not watch:
         raise ValueError("branches.watch is empty, so nothing would be watched; use [\"*\"] for all")
     return BranchRules(watch, ignore)
+
+
+def is_pattern(name: str) -> bool:
+    return "*" in name
+
+
+def expand_integration(entries, names) -> tuple[str, ...]:
+    """`integration_branches` as concrete branch names in one repository.
+
+    Plain names are kept as written (the branch may simply not exist there);
+    patterns such as `release/*` become the live branches they match. A release
+    branch is integrated-but-unreleased work, the same as `stage`, and is read
+    the same way rather than as somebody's change.
+    """
+    out = [e for e in entries if not is_pattern(e)]
+    pats = [e for e in entries if is_pattern(e)]
+    for n in names:
+        if n not in out and any(matches(p, n) for p in pats):
+            out.append(n)
+    return tuple(out)

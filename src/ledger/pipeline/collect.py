@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from ledger.adapters.vcs.base import ForgeUnavailable, VcsAdapter
-from ledger.core.branches import DEFAULT_RULES, BranchRules
+from ledger.core.branches import DEFAULT_RULES, BranchRules, expand_integration
 from ledger.core.join import Change
 from ledger.core.tickets import extract_tickets
 
@@ -136,11 +136,16 @@ def collect(
                 repo_degraded = True
                 out.errors.append(str(e))
 
+            integ_here = expand_integration(integration_branches, ())
             try:
                 pr_refs = {c.ref for c in out.changes if c.repo == repo.full_name}
-                for b in adapter.list_branches(repo.full_name, since=since):
+                live = adapter.list_branches(repo.full_name, since=since)
+                integ_here = expand_integration(integration_branches, [b.name for b in live])
+                for b in live:
                     if b.name in pr_refs or b.name == repo.default_branch:
                         continue
+                    if b.name in integ_here:
+                        continue        # read below, as integrated work
                     if not branches.allows(b.name):
                         out.branches_ignored += 1
                         continue
@@ -157,7 +162,7 @@ def collect(
                     # exactly the previous behaviour.
                     tickets = sorted(set(tickets) | _commit_tickets(
                         adapter, repo.full_name, repo.default_branch, b.name, project_keys,
-                        exclude=tuple(x for x in integration_branches
+                        exclude=tuple(x for x in integ_here
                                       if x != b.name and x != repo.default_branch)))
                     if not tickets and not b.author:
                         # A branch with neither a ticket key nor an author
@@ -200,7 +205,7 @@ def collect(
             # so without this it is invisible to the whole system -- which is
             # exactly the work most likely to collide with what is open now.
             known = {(c.repo, c.ref) for c in out.changes}
-            for integ in integration_branches:
+            for integ in integ_here:
                 if integ == repo.default_branch:
                     continue
                 try:

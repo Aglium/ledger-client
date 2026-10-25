@@ -19,7 +19,10 @@ liveness_days: 30
 
 # Branches holding integrated-but-unreleased work. Commits here that are not in
 # the default branch are in flight: written, merged, not yet in production.
-integration_branches: [stage, staging, develop]
+# Names or patterns, as in `branches` below: `release/*` reads every live
+# release branch as integrated work, so a ticket going out in a release is
+# still linked to the work that carries it elsewhere.
+integration_branches: [stage, staging, develop, "release/*"]
 
 # Repositories to leave out of the estate, e.g. this tool's own checkout if it
 # sits alongside the repos it indexes (its test fixtures would otherwise read

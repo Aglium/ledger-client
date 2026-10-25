@@ -179,10 +179,12 @@ def plan(start: str | Path, *, mirror_base: str = "~/.ledger/mirrors") -> Plan:
     branches = set(_git(root, "for-each-ref", "--format=%(refname:short)",
                         "refs/remotes/origin").splitlines())
     integration = [b for b in INTEGRATION_CANDIDATES if f"origin/{b}" in branches]
+    if integration and any(n.startswith("release/") for n in names):
+        integration.append("release/*")
 
     cfg: dict = {"org": (remote.namespace.split("/")[0] if remote else root.parent.name),
                  "project_keys": keys, "liveness_days": 30,
-                 "integration_branches": integration or list(INTEGRATION_CANDIDATES)}
+                 "integration_branches": integration or [*INTEGRATION_CANDIDATES, "release/*"]}
     cfg["branches"], branch_note = branch_rules(names)
     if branch_note:
         notes.append(branch_note)
