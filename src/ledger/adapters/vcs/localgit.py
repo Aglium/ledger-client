@@ -606,6 +606,16 @@ class LocalGitAdapter(VcsAdapter):
                                  body=body))
         return out
 
+    def merged_into(self, repo: str, into: str, ref: str, default: str) -> bool:
+        p = self._path(repo)
+        tip = _git(p, "rev-parse", self._resolve(p, ref)).strip()
+        into_ref = self._resolve(p, into)
+        if not tip or tip == _git(p, "rev-parse", into_ref).strip():
+            return False
+        line = _git(p, "rev-list", "--first-parent", into_ref,
+                    f"^{self._resolve_base(p, default, into)}").split()
+        return tip not in set(line)
+
     def commits_ahead(self, repo: str, base: str, head: str) -> int:
         p = self._path(repo)
         out = _git(p, "rev-list", "--count",

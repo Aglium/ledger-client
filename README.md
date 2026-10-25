@@ -77,7 +77,8 @@ not mistaken for a clean one.
 | `coverage` | Which repositories Ledger can see, their history, the gaps, and the prerequisites |
 | `replay` | Brief your recent merged changes as they were, to see whether Ledger would have helped |
 | `feedback record / import / summary` | Your verdicts on findings, kept locally |
-| `brief <repo> <ref>` | What a branch affects elsewhere |
+| `brief <repo> <ref>` | What a branch affects elsewhere (`--base` for a PR's target, `--worktree` for uncommitted edits) |
+| `ask inflight\|owners\|decisions` | The MCP tools' questions, as JSON, for a skill that calls the CLI |
 | `explain <repo> <ref>` | Other in-flight work on a branch's ticket |
 | `scan` | What the estate holds: repositories, contracts, work in flight |
 | `comment` | Post a sibling comment on a pull request (used by the GitHub Action) |
@@ -105,7 +106,7 @@ with no ticket key is briefed like any other. It is advisory and never fails a b
 `mode: siblings` for the old ticket-only comment.
 
 ```yaml
-- uses: Aglium/ledger-client@v0.2.1
+- uses: Aglium/ledger-client@v0.3.0
   continue-on-error: true
   with:
     github-token: ${{ secrets.LEDGER_TOKEN }}

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from ledger.core.branches import DEFAULT_RULES, BranchRules, validate_branches
+from ledger.core.branches import DEFAULT_RULES, BranchRules, any_match, is_pattern, validate_branches
 from ledger.core.declarations import FORMATS
 from ledger.core.gate import validate_enforce
 from ledger.core.tickets import validate_keys
@@ -135,7 +135,13 @@ class Config:
         """The integration branches named outright. Patterns (`release/*`) are
         expanded per repository where branches are enumerated; elsewhere a
         pattern names no branch and is left out."""
-        return tuple(b for b in self.integration_branches if "*" not in b)
+        return tuple(b for b in self.integration_branches if not is_pattern(b))
+
+    def is_change_branch(self, name: str) -> bool:
+        """Whether a branch can be somebody's change: watched by `branches`
+        and not an integration branch, which is never one whatever the
+        branch rules say."""
+        return self.branches.allows(name) and not any_match(self.integration_branches, name)
 
     @staticmethod
     def resolve_path(path: str | Path | None = None) -> Path:

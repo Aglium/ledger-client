@@ -56,9 +56,12 @@ class TestTheLabelledEstate:
         assert got["conflicts_found"] == "3/3"
         assert got["strength_right"] == 1.0
 
-    def test_the_same_author_alone_never_moves_a_verdict(self):
+    def test_the_same_author_alone_links_nothing(self):
+        """Two documentation fixes by one person half an hour apart share no
+        subject word. They used to be listed as a question; now they are not
+        linked at all, which is what the server has done since it measured it."""
         rows = {r["ref"]: r for r in lab_estate.measure()["rows"]}
-        assert rows["catalog-docs"]["links"] == ["author"] and rows["catalog-docs"]["got"] is None
+        assert rows["catalog-docs"]["links"] == [] and rows["catalog-docs"]["got"] is None
 
 
 class TestDirection:

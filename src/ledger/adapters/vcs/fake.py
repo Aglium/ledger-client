@@ -110,6 +110,15 @@ class FakeAdapter(VcsAdapter):
         out = list(self._commits.get((repo, head), []))
         return out[:limit] if limit else out
 
+    #: {(repo, into, ref): bool} for `merged_into`; unset pairs cannot be told.
+    merged: dict = {}
+
+    def merged_into(self, repo: str, into: str, ref: str, default: str) -> bool:
+        key = (repo, into, ref)
+        if key not in self.merged:
+            raise ForgeUnavailable(self.source, "not configured")
+        return self.merged[key]
+
     def commits_ahead(self, repo: str, base: str, head: str) -> int:
         """Configured per (repo, base, head). An unconfigured pair is an unknown
         ref, which is what the real adapters raise for, so this does too."""

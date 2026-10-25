@@ -26,7 +26,7 @@ from ledger import feedback as fb
 from ledger import remote, service
 from ledger.config import Config
 from ledger.core.contracts import ContractRef, Surface
-from ledger.pipeline.collect import collect
+from ledger.pipeline.collect import collect_for
 from ledger.pipeline.decisions import load_decisions
 from ledger.pipeline.scan import ScanCache
 from ledger.service import BadRequest, LedgerError
@@ -73,31 +73,20 @@ class Backend(Protocol):
 class RemoteBackend:
     """The organisation server, over HTTP."""
 
-    def __init__(self, url: str, token: str | None, local: Callable[[], Any] | None = None):
-        self.url, self.token = url, token
-        #: `() -> (cfg, adapters)` for reading this machine's own copy of a
-        #: change, which a server elsewhere cannot see. None: always ask plainly.
-        self.local = local
+    def __init__(self, url: str, token: str | None, *, cfg: Config | None = None,
+                 via: str = "mcp"):
+        self.url, self.token, self.cfg, self.via = url, token, cfg, via
+        #: This developer's branch rules, sent with every question.
+        self.headers = remote.headers_for(cfg)
 
     def _get(self, path: str, **params) -> dict:
-        return remote.get(self.url, self.token, path, {**params, "via": "mcp"})
+        return remote.get(self.url, self.token, path, {**params, "via": self.via},
+                          headers=self.headers)
 
     def brief(self, repo, ref, base=None, worktree=False):
-        """With `worktree`, this machine reads its own change -- unpushed
-        commits and uncommitted files -- and sends it, as the CLI does. If it
-        cannot, the server answers from what it can see."""
-        if worktree and self.local is not None:
-            try:
-                cfg, adapters = self.local()
-                vcs = service.tree_reader(adapters)
-                wire = service.read_local_change(cfg, vcs, repo, ref, worktree=True,
-                                                 base=base).to_wire()
-            except Exception:                           # noqa: BLE001 -- not readable here: ask plainly
-                wire = None
-            if wire is not None:
-                return remote.post(self.url, self.token, "/brief",
-                                   {"repo": repo, "ref": ref, "via": "mcp", "local": wire})
-        return self._get("/brief", repo=repo, ref=ref, base=base)
+        """See `remote.brief_asker`: the same path the CLI takes."""
+        return remote.brief_asker(self.cfg, self.url, self.token, via=self.via,
+                                  worktree=worktree, headers=self.headers)(repo, ref, base)
 
     def inflight_for(self, ticket):
         return self._get("/inflight", ticket=ticket)
@@ -119,7 +108,7 @@ class RemoteBackend:
             note = f"[{v}] {note}".strip()
         return remote.post(self.url, self.token, "/feedback",
                            {"verdict": word, "note": note, "event_id": event_id,
-                            "repo": repo, "ref": ref, "tool": tool})
+                            "repo": repo, "ref": ref, "tool": tool}, headers=self.headers)
 
 
 class LiveBackend:
@@ -135,10 +124,7 @@ class LiveBackend:
     def inflight_for(self, ticket):
         ticket = ticket.strip().upper()
         cfg = self.cfg
-        got = collect(self.adapters(), cfg.project_keys, liveness_days=cfg.liveness_days,
-                      integration_branches=cfg.integration_branches,
-                      exclude_repos=cfg.exclude_repos,
-                      branches=cfg.branches)
+        got = collect_for(cfg, self.adapters())
         changes = [{
             "repo": c.repo, "ref": c.ref, "kind": c.kind, "pr_number": c.pr_number,
             "title": c.title, "author": c.author, "url": c.url,
@@ -217,6 +203,8 @@ class SetupBackend:
                 cfg = self.load()
             except FileNotFoundError:
                 raise LedgerError(NOT_SET_UP) from None
+            except ValueError as e:
+                raise LedgerError(f"the Ledger config is not valid: {e}") from None
             self.backend = self.make(cfg)
         return self.backend
 

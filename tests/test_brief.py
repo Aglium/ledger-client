@@ -227,7 +227,7 @@ class TestGateContract:
     def test_serialises_to_a_stable_schema(self):
         d = adr(ticket="ABC-321", open_gates=["still lacks binding"])
         payload = build_brief(find_siblings(SUBJ, [SIB, INTEGRATED]), [d]).to_dict()
-        assert payload["schema"] == 18
+        assert payload["schema"] == 19
         assert set(payload) == {"schema", "subject", "recommendation", "confidence", "reasons",
                                 "not_local", "actors", "index", "contracts", "field_breaks",
                                 "contract_breaks", "impacts", "decisions", "ranked"}
@@ -412,7 +412,7 @@ class TestFieldBreaks:
     def test_it_reaches_the_gate_payload(self):
         payload = build_brief(find_siblings(SUBJ, [SUBJ]), [], field_breaks=[self.brk()],
                               own_commits=1).to_dict()
-        assert payload["schema"] == 18
+        assert payload["schema"] == 19
         fb = payload["field_breaks"][0]
         assert fb["field_path"] == "documents[].recipientId"
         assert fb["readers"][0]["repo"] == "orchestrator" and fb["evidence"].startswith("-")

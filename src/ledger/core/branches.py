@@ -6,18 +6,19 @@ wildcards (`release/*`, `*-stable`, `dependabot/*`), and `*` matches any run
 of characters, `/` included. Case does not matter: `Release/1.2` is `release/*`.
 
 A branch is watched when it matches some `watch` pattern and no `ignore`
-pattern; ignore wins. These rules decide what is *other work in flight*. They
-never hide a repository's default branch (that is the base everything is read
-against, whatever it is called), never hide `integration_branches` (those are
-read as integrated work, by name), and never refuse a brief on the branch you
-are standing on.
+pattern; ignore wins. These rules decide what is *other work in flight*. A
+repository's default branch and its `integration_branches` are never anybody's
+change, whatever these lists say: they are the base, or integrated work read
+commit by commit. A pull request from a fork is always watched, because its
+branch name belongs to another repository. And a brief on the branch you are
+standing on always runs in full.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, lru_cache
 
 #: What is ignored when a config says nothing. Long-lived lines of development
 #: and release trains are not one person's change: their diff is everything
@@ -33,6 +34,7 @@ DEFAULT_IGNORE: tuple[str, ...] = (
 )
 
 
+@lru_cache(maxsize=1024)
 def _compile(pattern: str) -> re.Pattern:
     return re.compile(".*".join(re.escape(part) for part in pattern.split("*")) + r"\Z",
                       re.IGNORECASE)
@@ -109,6 +111,11 @@ def is_pattern(name: str) -> bool:
     return "*" in name
 
 
+def any_match(patterns, name: str) -> bool:
+    """Whether `name` is any of `patterns` (names or `*` patterns)."""
+    return any(_compile(p).match(name) for p in patterns)
+
+
 def expand_integration(entries, names) -> tuple[str, ...]:
     """`integration_branches` as concrete branch names in one repository.
 
@@ -119,7 +126,21 @@ def expand_integration(entries, names) -> tuple[str, ...]:
     """
     out = [e for e in entries if not is_pattern(e)]
     pats = [e for e in entries if is_pattern(e)]
-    for n in names:
-        if n not in out and any(matches(p, n) for p in pats):
-            out.append(n)
+    if pats:
+        for n in names:
+            if n not in out and any_match(pats, n):
+                out.append(n)
     return tuple(out)
+
+
+class Patterns:
+    """Names and `*` patterns as a set: `"release/2.4" in Patterns(["release/*"])`."""
+
+    def __init__(self, entries=()):
+        self.entries = tuple(entries)
+
+    def __contains__(self, name) -> bool:
+        return isinstance(name, str) and any_match(self.entries, name)
+
+    def __bool__(self) -> bool:
+        return bool(self.entries)

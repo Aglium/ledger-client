@@ -95,6 +95,9 @@ class GitHubAdapter(VcsAdapter):
                 url=p.get("html_url"),
                 updated_at=_ts(p.get("updated_at")),
                 body=p.get("body") or "",
+                fork=bool((p["head"].get("repo") or {}).get("full_name")
+                          and (p["head"].get("repo") or {}).get("full_name")
+                          != (p["base"].get("repo") or {}).get("full_name", repo)),
             )
             for p in self._get(f"/repos/{repo}/pulls", state="open")
         ]

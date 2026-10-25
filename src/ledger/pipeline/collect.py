@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from ledger.adapters.vcs.base import ForgeUnavailable, VcsAdapter
-from ledger.core.branches import DEFAULT_RULES, BranchRules, expand_integration
+from ledger.core.branches import DEFAULT_RULES, BranchRules, any_match, expand_integration
 from ledger.core.join import Change
 from ledger.core.tickets import extract_tickets
 
@@ -91,8 +91,14 @@ def collect(
     integration_branches: tuple[str, ...] = (),
     exclude_repos: tuple[str, ...] = (),
     branches: BranchRules = DEFAULT_RULES,
+    keep: tuple[str, str] | None = None,
     now: datetime | None = None,
 ) -> Collection:
+    """Open work across every repository.
+
+    `keep` is `(repo, ref)` of the change being briefed: never left out by the
+    branch rules, so a brief on the branch you are on reads it in full.
+    """
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(days=liveness_days)
     out = Collection()
@@ -114,11 +120,32 @@ def collect(
             out.repo_sources[repo.full_name] = adapter.source
             repo_degraded = False
 
+            def kept(ref: str) -> bool:
+                return keep is not None and keep == (repo.full_name, ref)
+
+            # Branches first: whether a pull request's head is one of this
+            # repository's long-lived lines is answered from them.
+            live: list = []
+            try:
+                live = adapter.list_branches(repo.full_name, since=since)
+            except ForgeUnavailable as e:
+                repo_degraded = True
+                out.errors.append(str(e))
+            integ_here = expand_integration(integration_branches, [b.name for b in live])
+            ignored_heads: set[str] = set()
+
             try:
                 for p in adapter.list_open_pulls(repo.full_name):
-                    if not branches.allows(p.head_ref):
-                        out.branches_ignored += 1
-                        continue
+                    if not p.fork and not kept(p.head_ref):
+                        # `develop` -> `main` is a release train, whatever the
+                        # branch rules say; and the rules' own verdict.
+                        if (p.head_ref == repo.default_branch
+                                or any_match(integration_branches, p.head_ref)):
+                            continue
+                        if not branches.allows(p.head_ref):
+                            out.branches_ignored += 1
+                            ignored_heads.add(p.head_ref)
+                            continue
                     # The branch name, the PR title and the description all
                     # carry ticket ids, and they disagree often enough to be
                     # worth unioning. The description is free: both forges
@@ -136,17 +163,16 @@ def collect(
                 repo_degraded = True
                 out.errors.append(str(e))
 
-            integ_here = expand_integration(integration_branches, ())
             try:
                 pr_refs = {c.ref for c in out.changes if c.repo == repo.full_name}
-                live = adapter.list_branches(repo.full_name, since=since)
-                integ_here = expand_integration(integration_branches, [b.name for b in live])
                 for b in live:
                     if b.name in pr_refs or b.name == repo.default_branch:
                         continue
-                    if b.name in integ_here:
+                    if b.name in integ_here or any_match(integration_branches, b.name):
                         continue        # read below, as integrated work
-                    if not branches.allows(b.name):
+                    if b.name in ignored_heads:
+                        continue        # counted with its pull request
+                    if not kept(b.name) and not branches.allows(b.name):
                         out.branches_ignored += 1
                         continue
                     tickets = extract_tickets(b.name, project_keys)
@@ -239,3 +265,13 @@ def collect(
     out.missing_sources = tuple(missing)
     out.partial = bool(missing)
     return out
+
+
+def collect_for(cfg, adapters: list[VcsAdapter], *, liveness_days: int | None = None,
+                keep: tuple[str, str] | None = None, now: datetime | None = None) -> Collection:
+    """`collect` with everything the config says, so no caller can forget a knob."""
+    return collect(adapters, cfg.project_keys,
+                   liveness_days=liveness_days or cfg.liveness_days,
+                   integration_branches=tuple(cfg.integration_branches),
+                   exclude_repos=tuple(cfg.exclude_repos),
+                   branches=cfg.branches, keep=keep, now=now)

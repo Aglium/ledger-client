@@ -23,6 +23,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
+from ledger.core.branches import Patterns
 from ledger.core.contracts import ContractRef
 from ledger.core.decision import Decision, DecisionSource, DecisionStatus
 from ledger.core.join import Change, JoinResult
@@ -150,6 +151,9 @@ class Impact:
     #: When the two changes cannot both land as they are -- one removes what
     #: the other uses -- the sentence that says so. See `effect.opposite_moves`.
     conflict: str | None = None
+    #: The two diffs share no name; only the other change's REPOSITORY touches
+    #: a contract this one does. Not a link the work made, so it never leads.
+    by_repository: bool = False
 
 
 @dataclass
@@ -279,12 +283,15 @@ class ImpactBrief:
         line. It also narrowed decision_needed from a decision: the contract
         it names must be one another repository produces or consumes.
 
+        Version 19 added `impacts[].by_repository`: true when the only link is
+        what the other change's repository does, not what its diff does.
+
         Additive changes still bump the version, because a consumer is free to
         validate strictly, and finding out from a production gate that the
         payload grew a key is not acceptable.
         """
         return {
-            "schema": 18,
+            "schema": 19,
             "subject": {
                 "repo": self.repo, "ref": self.ref, "tickets": self.tickets,
                 "resolved": self.resolved, "base": self.base, "own_commits": self.own_commits,
@@ -476,7 +483,7 @@ def link_decisions(
     """
     changed_paths = changed_paths or []
     contracts = contracts or []
-    integration = frozenset(integration_branches)
+    integration = Patterns(integration_branches)
     decisions, copies = _collapse_copies(decisions, integration)
     tickets = {t.upper() for t in change.tickets}
     subject_tokens = _tokens(change.ref) | _tokens(change.title or "")
@@ -572,6 +579,7 @@ def build_brief(
     base: str | None = None,
     own_commits: int | None = None,
     uncommitted: list[str] | None = None,
+    integrated_in: str | None = None,
 ) -> ImpactBrief:
     """Assemble the brief and commit to a recommendation.
 
@@ -815,6 +823,12 @@ def build_brief(
             f"{ci.surface} `{ci.name}` is documented in \"{page['title'][:70]}\"{when}{where}{tail}"
         )
 
+    if integrated_in and base:
+        brief.reasons.append(
+            f"its work is already merged into `{integrated_in}` and not yet into `{base}`, so it "
+            f"is read against `{base}`, as a pull request to `{base}` would be; pass the target "
+            "branch as `base` to read it against another"
+        )
     if own_commits is None and base:
         brief.reasons.append(
             f"this branch does not exist yet; the rest is what `{base}` and the other repos "

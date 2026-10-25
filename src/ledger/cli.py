@@ -14,7 +14,7 @@ from ledger.core.check import decide
 from ledger.core.join import find_siblings
 from ledger.core.render import render_siblings
 from ledger.core.tickets import extract_tickets
-from ledger.pipeline.collect import collect
+from ledger.pipeline.collect import collect_for
 from ledger.pipeline.scan import ScanCache
 
 from ledger import service
@@ -200,7 +200,6 @@ def feedback_record(
     event: str = typer.Option(None, "--event",
                               help="The `event_id` of the answer this is about, when it came "
                                    "from an organisation server"),
-    config: str = typer.Option(None, envvar="LEDGER_CONFIG", help="Path to ledger.yml"),
 ):
     """Record one answer about a finding.
 
@@ -218,7 +217,8 @@ def feedback_record(
     try:
         row = fb.record(verdict, repo=repo or found.get("repo"), ref=ref or found.get("ref"),
                         sha=found.get("sha"), recommendation=found.get("recommendation"),
-                        note=note, source="replay" if case else "cli", case=case)
+                        note=note, source="replay" if case else "cli", case=case,
+                        event_id=event)
     except fb.BadVerdict as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from None
@@ -237,6 +237,81 @@ def feedback_record(
             typer.secho(f"not sent to the organisation server: {e}", fg="yellow", err=True)
         else:
             typer.echo(f"sent to {url}")
+
+
+ask_app = typer.Typer(help="The questions the MCP tools answer, from the command line, as JSON. "
+                           "Asks the organisation server when LEDGER_URL is set.",
+                      no_args_is_help=True)
+app.add_typer(ask_app, name="ask")
+
+
+def _backend(config: str | None, local_root: str | None, *, via: str):
+    """Where the MCP tools and `ask` get their answers: one function, so they
+    cannot disagree.
+
+    With LEDGER_URL, the organisation server. A config is optional there: it
+    adds this developer's branch rules and lets a brief send the change from
+    this machine, and one that is missing or broken only loses those -- the
+    server still answers. Without LEDGER_URL, the estate is read here, and the
+    config is required: each call says how to set Ledger up, or what is wrong
+    with the file.
+    """
+    from ledger.surfaces.mcp import LiveBackend, RemoteBackend, SetupBackend
+
+    url = os.environ.get("LEDGER_URL")
+    if url and not local_root:
+        try:
+            cfg = Config.load(config)
+        except Exception:                               # noqa: BLE001 -- no usable config: ask plainly
+            cfg = None
+        return RemoteBackend(url, os.environ.get("LEDGER_API_TOKEN"), cfg=cfg, via=via)
+    return SetupBackend(lambda: Config.load(config),
+                        lambda cfg: LiveBackend(cfg, lambda: _adapters(cfg, local_root)))
+
+
+def _answer(fn) -> None:
+    import json
+    try:
+        got = fn()
+    except LedgerError as e:
+        _fail(e)
+    typer.echo(json.dumps(got, indent=2, default=str))
+
+
+@ask_app.command("inflight")
+def ask_inflight(
+    ticket: str,
+    config: str = typer.Option(None, envvar="LEDGER_CONFIG", help="Path to ledger.yml"),
+    local_root: str = typer.Option(None, "--local-root"),
+):
+    """Open work carrying a ticket key, in every repository."""
+    _answer(lambda: _backend(config, local_root, via="cli").inflight_for(ticket))
+
+
+@ask_app.command("owners")
+def ask_owners(
+    surface: str = typer.Argument(..., help="topic | http | table"),
+    name: str = typer.Argument(...),
+    config: str = typer.Option(None, envvar="LEDGER_CONFIG", help="Path to ledger.yml"),
+    local_root: str = typer.Option(None, "--local-root"),
+):
+    """Repositories that touch a contract, and which way each faces it."""
+    _answer(lambda: _backend(config, local_root, via="cli").who_owns(surface, name))
+
+
+@ask_app.command("decisions")
+def ask_decisions(
+    ticket: str = typer.Option(None, "--ticket"),
+    contract: str = typer.Option(None, "--contract"),
+    repo: str = typer.Option(None, "--repo"),
+    config: str = typer.Option(None, envvar="LEDGER_CONFIG", help="Path to ledger.yml"),
+    local_root: str = typer.Option(None, "--local-root"),
+):
+    """ADRs and TODO entries matching a ticket, naming a contract, or in a repository."""
+    if not (ticket or contract or repo):
+        typer.secho("give --ticket, --contract or --repo", fg="red", err=True)
+        raise typer.Exit(2)
+    _answer(lambda: _backend(config, local_root, via="cli").decisions_for(ticket, contract, repo))
 
 
 @feedback_app.command("import")
@@ -310,10 +385,7 @@ def scan(
     """Report what the liveness window actually contains. Run this before any backfill."""
     cfg = _load_config(config)
     days = liveness_days or cfg.liveness_days
-    got = collect(_adapters(cfg, local_root), cfg.project_keys, liveness_days=days,
-                  integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos,
-                  branches=cfg.branches)
+    got = collect_for(cfg, _adapters(cfg, local_root), liveness_days=days)
 
     by_ticket: dict[str, set[str]] = {}
     for c in got.changes:
@@ -346,10 +418,7 @@ def explain(
         # Same guard as `brief`: an unknown repo or ref is an input error, not
         # a change with nothing else in flight.
         _resolve_subject(cfg, _vcs, repo, ref)
-    got = collect(_adapters_, cfg.project_keys, liveness_days=cfg.liveness_days,
-                  integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos,
-                  branches=cfg.branches)
+    got = collect_for(cfg, _adapters_)
 
     subject = next((c for c in got.changes if c.repo == repo and c.ref == ref), None)
     if subject is None:
@@ -592,10 +661,7 @@ def overlap(
     """
     cfg = _load_config(config)
     adapters = _adapters(cfg, local_root)
-    got = collect(adapters, cfg.project_keys, liveness_days=liveness_days or cfg.liveness_days,
-                  integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos,
-                  branches=cfg.branches)
+    got = collect_for(cfg, adapters, liveness_days=liveness_days or cfg.liveness_days)
     scan = scan_signals(adapters, got)
 
     hits = overlaps_for((repo, ref), scan, min_score=min_score)
@@ -629,10 +695,7 @@ def benchmark(
     """
     cfg = _load_config(config)
     adapters = _adapters(cfg, local_root)
-    got = collect(adapters, cfg.project_keys, liveness_days=liveness_days or cfg.liveness_days,
-                  integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos,
-                  branches=cfg.branches)
+    got = collect_for(cfg, adapters, liveness_days=liveness_days or cfg.liveness_days)
     scan = scan_signals(adapters, got)
     comparisons = compare_arms(got, scan, min_score=min_score)
 
@@ -767,10 +830,7 @@ def comment(
         typer.secho("--ref is required until PR-number lookup lands", fg="yellow")
         raise typer.Exit(1)
     adapters = _adapters(cfg, local_root)
-    got = collect(adapters, cfg.project_keys, liveness_days=cfg.liveness_days,
-                  integration_branches=cfg.integration_branches,
-                  exclude_repos=cfg.exclude_repos,
-                  branches=cfg.branches)
+    got = collect_for(cfg, adapters)
     subject = next((c for c in got.changes if c.repo == repo and c.ref == ref), None)
     if subject is None:
         subject = Change(repo=repo, ref=ref, tickets=tuple(extract_tickets(ref, cfg.project_keys)),
@@ -807,24 +867,11 @@ def mcp_server(
     the estate live: slower, and without what only a stored index knows.
     Nothing is written to stdout except the protocol.
     """
-    from ledger.surfaces.mcp import LiveBackend, RemoteBackend, SetupBackend, build_server
+    from ledger.surfaces.mcp import build_server
 
-    url = os.environ.get("LEDGER_URL")
     # Without a config the server still starts: the plugin launches it on install,
     # before setup, and each tool then says how to set Ledger up.
-    if url and not local_root:
-        from ledger import remote
-        try:
-            remote.use_config(Config.load(config))
-        except Exception:                               # noqa: BLE001 -- no config: nothing to narrow
-            pass
-    def _local():
-        cfg = Config.load(config)
-        return cfg, service.build_adapters(cfg, None)
-
-    backend = (RemoteBackend(url, os.environ.get("LEDGER_API_TOKEN"), _local) if url and not local_root
-               else SetupBackend(lambda: Config.load(config),
-                                 lambda cfg: LiveBackend(cfg, lambda: _adapters(cfg, local_root))))
+    backend = _backend(config, local_root, via="mcp")
     try:
         srv = build_server(backend)
     except LedgerError as e:
@@ -883,53 +930,20 @@ def _hook_context(cfg: Config, surface: str):
         url = os.environ.get("LEDGER_URL")
         if not url:
             raise LedgerError("context needs the organisation server: set LEDGER_URL")
-        remote.use_config(cfg)
         return remote.post(url, os.environ.get("LEDGER_API_TOKEN"), "/context",
-                           {"text": text, "repo": repo, "via": surface})
+                           {"text": text, "repo": repo, "via": surface},
+                           headers=remote.headers_for(cfg))
     return go
-
-
-def _same_machine(url: str) -> bool:
-    from urllib.parse import urlparse
-    return (urlparse(url).hostname or "") in ("127.0.0.1", "localhost", "::1")
 
 
 def _remote_brief(cfg: Config, url: str, surface: str, timeout: float, worktree: bool,
                   allow_missing_ref: bool):
-    """Ask the organisation server for a brief.
-
-    A server on this machine reads the same checkout this command runs in, so
-    it is simply asked. A server anywhere else has only mirrors: it cannot see
-    commits that are not pushed or files that are not committed, which is the
-    state a change is in when a brief is wanted. So this machine reads its own
-    change and sends it. If it cannot -- the repository is not checked out
-    here, or the change is too large to send -- the server answers from what
-    it can see.
-    """
+    """Ask the organisation server for a brief; see `remote.brief_asker`."""
     from ledger import remote
-    from ledger.surfaces import hook as h
-
-    remote.use_config(cfg)
-    token = os.environ.get("LEDGER_API_TOKEN")
-    ask = h.http_brief(url, token, timeout, via=surface,
-                       worktree=worktree and _same_machine(url),
-                       allow_missing_ref=allow_missing_ref)
-    if _same_machine(url) or allow_missing_ref:
-        return ask
-
-    def brief_for(repo: str, ref: str, base: str | None = None) -> dict:
-        try:
-            vcs = service.tree_reader(service.build_adapters(cfg, None))
-            wire = service.read_local_change(cfg, vcs, repo, ref, worktree=worktree,
-                                             base=base).to_wire()
-        except Exception:                               # noqa: BLE001 -- not readable here: ask plainly
-            wire = None
-        if wire is None:
-            return ask(repo, ref, base)
-        return remote.post(url, token, "/brief",
-                           {"repo": repo, "ref": ref, "via": surface, "local": wire},
-                           timeout=timeout)
-    return brief_for
+    return remote.brief_asker(cfg, url, os.environ.get("LEDGER_API_TOKEN"), via=surface,
+                              timeout=timeout, worktree=worktree,
+                              allow_missing_ref=allow_missing_ref,
+                              headers=remote.headers_for(cfg))
 
 
 def _hook_brief(cfg: Config, surface: str, timeout: float, worktree: bool = True,

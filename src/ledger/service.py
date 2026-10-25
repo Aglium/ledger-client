@@ -38,10 +38,10 @@ from ledger.core.contracts import ContractRef, Edge, Surface, discover, discover
 from ledger.core.credentials import api_host, from_git
 from ledger.core.join import Change, find_siblings
 from ledger.core.tickets import extract_tickets
-from ledger.pipeline.collect import collect
+from ledger.pipeline.collect import collect_for
 from ledger.pipeline.decisions import load_decisions
 from ledger.pipeline.scan import ScanCache
-from ledger.core.branches import DEFAULT_RULES
+from ledger.core.branches import DEFAULT_RULES, expand_integration
 
 
 class LedgerError(Exception):
@@ -216,6 +216,9 @@ class Subject:
     repos: dict[str, str]
     base: str
     own_commits: int
+    #: An integration branch the change is already merged into when it is
+    #: not yet in the default branch. The base is then the default branch.
+    integrated_in: str | None = None
 
 
 #: What a client may send of its own change. A change larger than this is a
@@ -246,6 +249,8 @@ class LocalChange:
     files: list[ChangedFile] = field(default_factory=list)       # committed, against `base`
     pending: list[ChangedFile] = field(default_factory=list)     # not committed
     texts: dict[str, str] = field(default_factory=dict)          # changed files, whole
+    #: Merged into this integration branch, not into `base`: see `Subject`.
+    integrated_in: str | None = None
 
     def to_wire(self) -> dict | None:
         """The JSON a client posts, or None when the change is too large to send."""
@@ -257,6 +262,7 @@ class LocalChange:
                 texts[path] = text
                 budget -= len(text)
         return {"base": self.base, "own_commits": self.own_commits,
+                **({"integrated_in": self.integrated_in} if self.integrated_in else {}),
                 "files": [{"path": f.path, "body": f.body} for f in self.files],
                 "pending": [{"path": f.path, "body": f.body} for f in self.pending],
                 "texts": texts}
@@ -281,8 +287,10 @@ class LocalChange:
         texts = doc.get("texts") or {}
         if not isinstance(texts, dict):
             raise BadRequest("`texts` must be an object of path to file text")
+        integrated = doc.get("integrated_in")
         got = cls(doc["base"], max(own, 0), files("files"), files("pending"),
-                  {str(k): str(v) for k, v in texts.items()})
+                  {str(k): str(v) for k, v in texts.items()},
+                  integrated if isinstance(integrated, str) and integrated else None)
         if sum(len(f.body) for f in [*got.files, *got.pending]) > WIRE_DIFF_LIMIT \
                 or sum(len(t) for t in got.texts.values()) > WIRE_TEXT_LIMIT:
             raise BadRequest("the change is too large to brief from the client's copy")
@@ -300,7 +308,20 @@ def read_local_change(cfg: Config, vcs: VcsAdapter, repo: str, ref: str, *,
         texts = vcs.read_files(repo, ref, paths) if paths else {}
     except ForgeUnavailable:
         texts = {}
-    return LocalChange(subj.base, subj.own_commits, files, pending, texts)
+    return LocalChange(subj.base, subj.own_commits, files, pending, texts, subj.integrated_in)
+
+
+def integration_candidates(cfg: Config, vcs: VcsAdapter, repo: str) -> list[str]:
+    """`integration_branches` as this repository's branch names: patterns
+    such as `release/*` become the branches they match."""
+    names = list(cfg.integration_names)
+    if len(names) == len(cfg.integration_branches):
+        return names
+    try:
+        listed = [b.name for b in vcs.list_branches(repo)]
+    except ForgeUnavailable:
+        return names
+    return list(expand_integration(cfg.integration_branches, listed))
 
 
 def resolve_subject(cfg: Config, vcs: VcsAdapter, repo: str, ref: str, *,
@@ -326,7 +347,8 @@ def resolve_subject(cfg: Config, vcs: VcsAdapter, repo: str, ref: str, *,
         except ForgeUnavailable:
             pass            # not a branch this repository has: work it out instead
     ahead: dict[str, int] = {}
-    for cand in [default, *[b for b in cfg.integration_names if b != default]]:
+    integration = integration_candidates(cfg, vcs, repo)
+    for cand in [default, *[b for b in integration if b != default]]:
         try:
             ahead[cand] = vcs.commits_ahead(repo, cand, ref)
         except ForgeUnavailable:
@@ -334,7 +356,26 @@ def resolve_subject(cfg: Config, vcs: VcsAdapter, repo: str, ref: str, *,
     if not ahead:
         raise NotFound(f"unknown ref {ref!r} in {repo}")
     base, own = choose_base(ahead, default)
+    if (own == 0 and base != default and ahead.get(default, 0) > 0
+            and ref not in integration and _merged_into(vcs, repo, base, ref, default)):
+        # Merged into `stage`, not released. Against `stage` it has nothing of
+        # its own and was answered `proceed` with confidence; a team found
+        # exactly that. A pull request to the default branch carries these
+        # commits, so they are what is read.
+        #
+        # Only a branch merged there as a change of its own. A branch just cut
+        # from `stage`, or `stage` itself, also has nothing beyond it, and read
+        # against the default branch would be credited with the whole release
+        # train.
+        return Subject(repos, default, ahead[default], integrated_in=base)
     return Subject(repos, base, own)
+
+
+def _merged_into(vcs: VcsAdapter, repo: str, into: str, ref: str, default: str) -> bool:
+    try:
+        return vcs.merged_into(repo, into, ref, default)
+    except ForgeUnavailable:
+        return False
 
 
 # ------------------------------------------------------------------- index --
@@ -555,9 +596,8 @@ class LiveIndex:
 
     def use_changes(self, changes, cfg: Config | None = None) -> None:
         """The work in flight this brief may link to, as the caller enumerated it."""
-        rules = cfg.branches if cfg is not None else DEFAULT_RULES
-        self._population = [c for c in changes
-                            if c.kind != "integration" and rules.allows(c.ref)]
+        ok = cfg.is_change_branch if cfg is not None else DEFAULT_RULES.allows
+        self._population = [c for c in changes if c.kind != "integration" and ok(c.ref)]
         self._cfg = cfg
 
     def _others(self, exclude_repo: str | None) -> list[Change]:
@@ -597,13 +637,22 @@ class LiveIndex:
                 if c.repo != exclude_repo and wanted & {t.upper() for t in c.tickets}]
 
     def siblings_near(self, *, author, at, ref="", exclude_repo=None):
-        """The same author's work elsewhere, started within `NEAR` of this one."""
-        if not author or at is None:
+        """The same author's work elsewhere, started within `NEAR` of this one,
+        whose branch name shares a subject word with this one.
+
+        Author and clock alone paired two people's afternoons as often as one
+        change's halves: on 230 open changes a stored index found 99 such
+        links, 13 of them defensible once a shared word was required. A team
+        trying the client reported the same: a dashboards branch linked to a
+        voice-bot change by time alone.
+        """
+        if not author or at is None or not ref:
             return []
-        from ledger.core.join import Sibling
+        from ledger.core.join import Sibling, shared_words
         return [Sibling(c, tuple(c.tickets)) for c in self._others(exclude_repo)
                 if (c.author or "").lower() == author.lower() and c.updated_at is not None
-                and abs(c.updated_at.timestamp() - at.timestamp()) <= self.NEAR.total_seconds()]
+                and abs(c.updated_at.timestamp() - at.timestamp()) <= self.NEAR.total_seconds()
+                and shared_words(ref, c.ref)]
 
     def siblings_by_signal(self, signals, *, exclude_repo=None):
         """Changes elsewhere whose diffs share a RARE topic, table or migration with this one.
@@ -750,7 +799,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
             close = difflib.get_close_matches(repo, list(repos), n=3)
             raise NotFound(f"unknown repo {repo!r}"
                            + (f" — did you mean: {', '.join(close)}?" if close else ""))
-        subject = Subject(repos, local.base, local.own_commits)
+        subject = Subject(repos, local.base, local.own_commits, local.integrated_in)
     try:
         subj = subject or resolve_subject(cfg, vcs, repo, ref, prefer=base)
     except NotFound:
@@ -773,10 +822,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     result = None if collected is not None else index.inflight(
         repo, ref, tuple(extract_tickets(ref, cfg.project_keys)))
     if result is None:
-        got = collected or collect(adapters, cfg.project_keys, liveness_days=cfg.liveness_days,
-                                   integration_branches=cfg.integration_branches,
-                                   exclude_repos=cfg.exclude_repos,
-                                   branches=cfg.branches)
+        got = collected or collect_for(cfg, adapters, keep=(repo, ref))
         subject = next((c for c in got.changes if c.repo == repo and c.ref == ref), None)
         if subject is None:
             # The ref exists (resolved above) but is outside the liveness window
@@ -873,7 +919,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         # Not the branch this change is built on: work already in the base is
         # already in the change. Only an integration branch it is NOT built on
         # holds work that will land alongside it.
-        here = {c: [r for r in refs if r != subj.base]
+        here = {c: [r for r in refs if r not in (subj.base, subj.integrated_in)]
                 for c, refs in index.integration_here(repo, touched).items()}
         here = {c: refs for c, refs in here.items() if refs}
         # Topics: who really produces and consumes, not who merely names them.
@@ -984,9 +1030,10 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                     contract_docs=index.documented_in(touched),
                     contract_fields={c: v for c, v in index.fields_of(touched, exclude=repo).items()
                                      if owners.get(c)},
-                    integration_branches=cfg.integration_names,
+                    integration_branches=tuple(cfg.integration_branches),
                     resolved=True, base=subj.base,
                     own_commits=None if missing_ref else subj.own_commits,
+                    integrated_in=subj.integrated_in,
                     uncommitted=[f.path for f in pending])
     _link_without_a_ticket_key(b, index, repo, ref, diff_tickets, result, subject_signals,
                                touched=touched)
@@ -1060,7 +1107,7 @@ def _impact_base(cfg: Config, vcs: VcsAdapter, repos: dict[str, str], repo: str,
     if default is None:
         return None
     ahead: dict[str, int] = {}
-    for cand in [default, *[x for x in cfg.integration_names if x != default]]:
+    for cand in [default, *[x for x in integration_candidates(cfg, vcs, repo) if x != default]]:
         try:
             ahead[cand] = vcs.commits_ahead(repo, cand, ref)
         except ForgeUnavailable:
@@ -1079,7 +1126,7 @@ def impact_delta(cfg: Config, vcs: VcsAdapter, repos: dict[str, str], index, rep
 
     # A release train's diff is everything unreleased in its repository. That
     # is not what one change does, and it is megabytes.
-    if not vcs.supports_diffs or (kind != "integration" and not cfg.branches.allows(ref)):
+    if not vcs.supports_diffs or (kind != "integration" and not cfg.is_change_branch(ref)):
         return None, None
     try:
         pair = (index.diff_range(repo, ref, kind, sha) if hasattr(index, "diff_range")
@@ -1159,6 +1206,7 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
         i.relation, shared, fields = relation_line(delta, yours, your_keys=your_keys,
                                                    known_fields=known, repo_role=role)
         i.over = f"{shared.contract.surface.value} `{shared.contract.name}`" if shared else None
+        i.by_repository = shared is None and role is not None
         i.conflict = opposite_moves(delta, mine)
         i.ask = ask_line(i.ref, i.author, shared, fields)
 

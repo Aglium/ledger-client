@@ -76,6 +76,10 @@ class BitbucketAdapter(VcsAdapter):
                 updated_at=_ts(p.get("updated_on")),
                 body=(p.get("description")
                       or ((p.get("summary") or {}).get("raw") or "")),
+                fork=bool(((p.get("source") or {}).get("repository") or {}).get("full_name")
+                          and ((p.get("source") or {}).get("repository") or {}).get("full_name")
+                          != ((p.get("destination") or {}).get("repository") or {})
+                          .get("full_name", repo)),
             )
             for p in self._get(f"/repositories/{repo}/pullrequests", state="OPEN")
         ]

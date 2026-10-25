@@ -53,6 +53,11 @@ _BOT = re.compile(r"\[bot\]|(\A|[-_.])(bot|ci|cd|jenkins|renovate|dependabot|"
 
 #: How `core.effect.relation_line` opens when two diffs share no name.
 _NO_SHARED_NAME = "Ledger found no topic, route or table named by both diffs"
+#: How the relation opens when only the other change's REPOSITORY touches the
+#: contract, for payloads before schema 19 that lack `by_repository`. Not a
+#: link the work made: on a real estate four branches of one repository led a
+#: brief only because that repository publishes a topic the change uses.
+_BY_REPOSITORY = "its repository "
 
 
 @dataclass
@@ -227,7 +232,10 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
                         label=f"{c['surface']} `{c['name']}`", names=[c["name"]], directed=True))
     for i in b.get("impacts", []):
         how, rel = i.get("how") or "", i.get("relation") or ""
-        if rel and not rel.startswith(_NO_SHARED_NAME):
+        by_repo = i.get("by_repository")
+        if by_repo is None:                 # an older payload: read the sentence
+            by_repo = rel.startswith(_BY_REPOSITORY)
+        if rel and not by_repo and not rel.startswith(_NO_SHARED_NAME):
             link = "relation"
         elif how.startswith("same author"):
             link = "author"

@@ -105,7 +105,8 @@ aglium-ledger brief <repo> <ref> --json --worktree --base <target>
 know it: guessed, the base is wrong for a branch already merged into `stage`. `--worktree`
 includes uncommitted edits. `aglium-ledger feedback record <verdict> --event <event_id>`
 records whether an answer was useful, and sends it to the organisation server when
-`LEDGER_URL` is set.
+`LEDGER_URL` is set. `aglium-ledger ask inflight <TICKET>`, `ask owners <surface> <name>` and
+`ask decisions --ticket/--contract/--repo` answer the other tools' questions as JSON.
 
 ## What it will not tell you
 

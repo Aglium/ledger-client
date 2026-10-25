@@ -90,6 +90,9 @@ class PullRef:
     #: The description. Both forges return it in the list call that fetches
     #: everything else here, so reading it is free.
     body: str = ""
+    #: Opened from another repository. Its branch name is that repository's,
+    #: so this organisation's branch rules say nothing about it.
+    fork: bool = False
 
 
 class VcsAdapter(ABC):
@@ -202,6 +205,17 @@ class VcsAdapter(ABC):
             except ForgeUnavailable:
                 continue
         return out
+
+    def merged_into(self, repo: str, into: str, ref: str, default: str) -> bool:
+        """Whether `ref` was merged into `into` as a change of its own, rather
+        than cut from it.
+
+        Both have no commits beyond `into`. A branch merged with a merge commit
+        sits off `into`'s first-parent line; a branch cut from `into` (or `into`
+        itself) sits on it. A source that cannot tell raises, and the caller
+        assumes "cut from", which reads the change as before.
+        """
+        raise ForgeUnavailable(self.source, "this source cannot tell a merged branch from a cut one")
 
     def commits_ahead(self, repo: str, base: str, head: str) -> int:
         """Commits in `head` that are not in `base`.

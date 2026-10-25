@@ -255,6 +255,8 @@ def _history(path: Path, repo: str, ref: str, keys, since: date,
             seen.other += 1
             continue
         branch = bb.group("ref") if bb else f"pr-{gh.group('pr')}"
+        # A GitHub squash subject ("Title (#12)") carries no branch name, so the
+        # branch rules cannot apply to it: it stays in and is named pr-N.
         if bb and not branches.allows(branch):
             continue
         pr = int((bb or gh).group("pr"))

@@ -586,7 +586,8 @@ def handle(payload: dict, brief_for: Callable[[str, str], dict],
 
 def http_brief(url: str, token: str | None, timeout: float,
                via: str = "push_hook", worktree: bool = False,
-               allow_missing_ref: bool = False) -> Callable[[str, str], dict]:
+               allow_missing_ref: bool = False,
+               headers: dict | None = None) -> Callable[[str, str], dict]:
     """Ask a running `ledger-server serve` -- the fast path, the index is warm there.
 
     `worktree` is safe here only because the server reads the same clones this
@@ -598,8 +599,8 @@ def http_brief(url: str, token: str | None, timeout: float,
                                     **({"worktree": "1"} if worktree else {}),
                                     **({"new": "1"} if allow_missing_ref else {})})
         req = urllib.request.Request(f"{url.rstrip('/')}/brief?{q}")
-        from ledger import remote
-        remote.decorate(req)
+        for name, value in (headers or {}).items():
+            req.add_header(name, value)
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         with urllib.request.urlopen(req, timeout=timeout) as r:
