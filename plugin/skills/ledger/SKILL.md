@@ -98,8 +98,14 @@ leaves that page wrong unless somebody updates it; name the page.
 The same brief is available from the command line:
 
 ```bash
-aglium-ledger brief <repo> <ref> --json
+aglium-ledger brief <repo> <ref> --json --worktree --base <target>
 ```
+
+`--base` is the branch the change merges into, a pull request's target. Give it whenever you
+know it: guessed, the base is wrong for a branch already merged into `stage`. `--worktree`
+includes uncommitted edits. `aglium-ledger feedback record <verdict> --event <event_id>`
+records whether an answer was useful, and sends it to the organisation server when
+`LEDGER_URL` is set.
 
 ## What it will not tell you
 

@@ -61,7 +61,8 @@ LIVE_NOTE = ("Read live on this machine, without the organisation index: no decl
 class Backend(Protocol):
     """Where the answers come from."""
 
-    def brief(self, repo: str, ref: str) -> dict: ...
+    def brief(self, repo: str, ref: str, base: str | None = None,
+              worktree: bool = False) -> dict: ...
     def inflight_for(self, ticket: str) -> dict: ...
     def who_owns(self, surface: str, name: str) -> dict: ...
     def decisions_for(self, ticket: str | None, contract: str | None, repo: str | None) -> dict: ...
@@ -72,14 +73,31 @@ class Backend(Protocol):
 class RemoteBackend:
     """The organisation server, over HTTP."""
 
-    def __init__(self, url: str, token: str | None):
+    def __init__(self, url: str, token: str | None, local: Callable[[], Any] | None = None):
         self.url, self.token = url, token
+        #: `() -> (cfg, adapters)` for reading this machine's own copy of a
+        #: change, which a server elsewhere cannot see. None: always ask plainly.
+        self.local = local
 
     def _get(self, path: str, **params) -> dict:
         return remote.get(self.url, self.token, path, {**params, "via": "mcp"})
 
-    def brief(self, repo, ref):
-        return self._get("/brief", repo=repo, ref=ref)
+    def brief(self, repo, ref, base=None, worktree=False):
+        """With `worktree`, this machine reads its own change -- unpushed
+        commits and uncommitted files -- and sends it, as the CLI does. If it
+        cannot, the server answers from what it can see."""
+        if worktree and self.local is not None:
+            try:
+                cfg, adapters = self.local()
+                vcs = service.tree_reader(adapters)
+                wire = service.read_local_change(cfg, vcs, repo, ref, worktree=True,
+                                                 base=base).to_wire()
+            except Exception:                           # noqa: BLE001 -- not readable here: ask plainly
+                wire = None
+            if wire is not None:
+                return remote.post(self.url, self.token, "/brief",
+                                   {"repo": repo, "ref": ref, "via": "mcp", "local": wire})
+        return self._get("/brief", repo=repo, ref=ref, base=base)
 
     def inflight_for(self, ticket):
         return self._get("/inflight", ticket=ticket)
@@ -110,8 +128,9 @@ class LiveBackend:
     def __init__(self, cfg: Config, adapters: Callable[[], list]):
         self.cfg, self.adapters = cfg, adapters
 
-    def brief(self, repo, ref):
-        return service.run_brief(self.cfg, self.adapters(), repo, ref).to_dict()
+    def brief(self, repo, ref, base=None, worktree=False):
+        return service.run_brief(self.cfg, self.adapters(), repo, ref, worktree=worktree,
+                                 base=base).to_dict()
 
     def inflight_for(self, ticket):
         ticket = ticket.strip().upper()
@@ -201,8 +220,8 @@ class SetupBackend:
             self.backend = self.make(cfg)
         return self.backend
 
-    def brief(self, repo, ref):
-        return self._ready().brief(repo, ref)
+    def brief(self, repo, ref, base=None, worktree=False):
+        return self._ready().brief(repo, ref, base, worktree)
 
     def inflight_for(self, ticket):
         return self._ready().inflight_for(ticket)
@@ -240,15 +259,19 @@ def build_server(backend: Backend):
     srv = MCPServer(name="ledger", version=v, instructions=INSTRUCTIONS)
 
     @srv.tool()
-    def brief(repo: str, ref: str) -> dict:
+    def brief(repo: str, ref: str, base: str | None = None, worktree: bool = False) -> dict:
         """Impact brief for a branch: affected repos and in-flight work, contracts
         it shares with other repos, governing decisions, and a recommendation.
         Each in-flight item says what it does (`effect`), how it faces this
         change (`relation`), how far to trust that (`evidence`) and what to
         ask its author (`ask`) -- reason from those, not from its branch name.
         `behaviour`, when present, is a model's summary of that change's diff:
-        a lead to verify, never a fact to report."""
-        return _call(lambda: backend.brief(repo, ref))
+        a lead to verify, never a fact to report.
+        `base`: the branch this change merges into (a pull request's target);
+        give it whenever you know it -- guessed, it is wrong for a branch already
+        merged into `stage`. `worktree`: include uncommitted edits in the
+        checkout here."""
+        return _call(lambda: backend.brief(repo, ref, base, worktree))
 
     @srv.tool()
     def inflight_for(ticket: str) -> dict:

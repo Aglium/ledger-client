@@ -198,3 +198,37 @@ class TestReleaseBranchesAreIntegratedWork:
         cfg = Config.load(p)
         assert "release/*" in cfg.integration_branches
         assert "release/*" not in cfg.integration_names
+
+
+class TestBaseAndWorktreeReachTheServer:
+    def test_remote_brief_sends_the_base(self, monkeypatch):
+        from ledger.surfaces import mcp
+        seen = {}
+        monkeypatch.setattr(mcp.remote, "get", lambda url, tok, path, params: seen.update(
+            path=path, **params) or {})
+        mcp.RemoteBackend("http://x", None).brief("acme/orders", "feat/a", base="stage")
+        assert seen["path"] == "/brief" and seen["base"] == "stage"
+
+    def test_worktree_sends_this_machines_change(self, monkeypatch):
+        from ledger.surfaces import mcp
+
+        class Wire:
+            def to_wire(self):
+                return {"base": "stage", "files": []}
+        seen = {}
+        monkeypatch.setattr(mcp.service, "tree_reader", lambda adapters: None)
+        monkeypatch.setattr(mcp.service, "read_local_change",
+                            lambda cfg, vcs, repo, ref, worktree, base: seen.update(base=base) or Wire())
+        monkeypatch.setattr(mcp.remote, "post", lambda url, tok, path, body: seen.update(
+            path=path, body=body) or {})
+        mcp.RemoteBackend("http://x", None, lambda: (None, [])).brief(
+            "acme/orders", "feat/a", base="stage", worktree=True)
+        assert seen["path"] == "/brief" and seen["base"] == "stage"
+        assert seen["body"]["local"] == {"base": "stage", "files": []}
+
+    def test_cli_brief_takes_base(self):
+        from typer.testing import CliRunner
+
+        from ledger.cli import app
+        out = CliRunner().invoke(app, ["brief", "--help"], env={"COLUMNS": "200"})
+        assert "--base" in out.output

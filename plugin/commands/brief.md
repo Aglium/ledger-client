@@ -9,9 +9,12 @@ Report what this change affects beyond this repository.
 
 1. Work out `repo` and `ref`. With arguments, use them. Without, take the repository name
    from `git remote get-url origin` (the last path segment, without `.git`) and the branch
-   from `git rev-parse --abbrev-ref HEAD`.
-2. Call the `brief` tool of the `ledger` MCP server with them. If the tool is unavailable, run
-   `"${CLAUDE_PLUGIN_ROOT}/scripts/ledger-run.sh" brief <repo> <ref> --json --worktree`.
+   from `git rev-parse --abbrev-ref HEAD`. If a pull request is open or about to be, its target
+   branch is the `base` (`gh pr view --json baseRefName` when `gh` is available); otherwise
+   leave it out.
+2. Call the `brief` tool of the `ledger` MCP server with them, `worktree: true`, and `base`
+   when known. If the tool is unavailable, run
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/ledger-run.sh" brief <repo> <ref> --json --worktree [--base <target>]`.
 3. Report, in a few lines: the recommendation, the reasons, and who to involve.
    - `decision_needed`: a person with authority must decide first. Name the deciders.
    - `review_with`: name the other repositories and authors.

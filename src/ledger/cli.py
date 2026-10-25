@@ -183,7 +183,8 @@ def coverage(
     raise typer.Exit(1 if broken else 0)
 
 
-feedback_app = typer.Typer(help="Say whether Ledger's answers were any good. Kept on this machine.",
+feedback_app = typer.Typer(help="Say whether Ledger's answers were any good. Kept on this machine, "
+                                "and sent to the organisation server when LEDGER_URL is set.",
                            no_args_is_help=True)
 app.add_typer(feedback_app, name="feedback")
 
@@ -195,9 +196,17 @@ def feedback_record(
     report: str = typer.Option("ledger-replay.md", "--report", help="The replay report the case is in"),
     repo: str = typer.Option(None, "--repo"),
     ref: str = typer.Option(None, "--ref"),
-    note: str = typer.Option("", "--note", help="Why, in your words. Kept here, sent nowhere"),
+    note: str = typer.Option("", "--note", help="Why, in your words"),
+    event: str = typer.Option(None, "--event",
+                              help="The `event_id` of the answer this is about, when it came "
+                                   "from an organisation server"),
+    config: str = typer.Option(None, envvar="LEDGER_CONFIG", help="Path to ledger.yml"),
 ):
-    """Record one answer about a finding."""
+    """Record one answer about a finding.
+
+    Kept on this machine. With LEDGER_URL set it is also sent to the
+    organisation server, where the team's verdicts are counted.
+    """
     from pathlib import Path
 
     from ledger import feedback as fb
@@ -215,6 +224,19 @@ def feedback_record(
         raise typer.Exit(2) from None
     typer.echo(f"kept: {row['verdict']}" + (f" for {row['repo']} {row.get('ref', '')}" if row.get("repo") else "")
                + f"  ({fb.store()})")
+    url = os.environ.get("LEDGER_URL")
+    if url:
+        from ledger import remote
+        word = fb.SERVER_WORD[row["verdict"]]
+        sent_note = note if word == row["verdict"] else f"[{row['verdict']}] {note}".strip()
+        try:
+            remote.post(url, os.environ.get("LEDGER_API_TOKEN"), "/feedback",
+                        {"verdict": word, "note": sent_note, "event_id": event,
+                         "repo": row.get("repo"), "ref": row.get("ref"), "tool": "cli"})
+        except LedgerError as e:
+            typer.secho(f"not sent to the organisation server: {e}", fg="yellow", err=True)
+        else:
+            typer.echo(f"sent to {url}")
 
 
 @feedback_app.command("import")
@@ -462,6 +484,11 @@ def brief(
                                   help="Include uncommitted changes in the local clone"),
     gate: bool = typer.Option(False, "--gate",
                               help="Exit 1 when the verdict is one the config enforces"),
+    base: str = typer.Option(None, "--base",
+                             help="The branch this change merges into, e.g. a pull request's "
+                                  "target. Without it the base is guessed from the default and "
+                                  "integration branches, which is wrong for a branch already "
+                                  "merged into one of them."),
 ):
     """Impact brief: what this change affects, who it affects, and what to do.
 
@@ -480,7 +507,7 @@ def brief(
     if url and not live and not local_root:
         from ledger.surfaces.hook import summarise
         try:
-            got = _remote_brief(cfg, url, "cli", 60.0, worktree, False)(repo, ref)
+            got = _remote_brief(cfg, url, "cli", 60.0, worktree, False)(repo, ref, base)
         except LedgerError as e:
             _fail(e)
         if as_json:
@@ -490,7 +517,8 @@ def brief(
             typer.echo(summarise(got))
         raise typer.Exit(_gate(cfg, got.get("recommendation") or "", gate))
     try:
-        b = service.run_brief(cfg, _adapters(cfg, local_root), repo, ref, worktree=worktree)
+        b = service.run_brief(cfg, _adapters(cfg, local_root), repo, ref, worktree=worktree,
+                              base=base)
     except LedgerError as e:
         _fail(e)
     print_brief(b, as_json)
@@ -790,7 +818,11 @@ def mcp_server(
             remote.use_config(Config.load(config))
         except Exception:                               # noqa: BLE001 -- no config: nothing to narrow
             pass
-    backend = (RemoteBackend(url, os.environ.get("LEDGER_API_TOKEN")) if url and not local_root
+    def _local():
+        cfg = Config.load(config)
+        return cfg, service.build_adapters(cfg, None)
+
+    backend = (RemoteBackend(url, os.environ.get("LEDGER_API_TOKEN"), _local) if url and not local_root
                else SetupBackend(lambda: Config.load(config),
                                  lambda cfg: LiveBackend(cfg, lambda: _adapters(cfg, local_root))))
     try:
