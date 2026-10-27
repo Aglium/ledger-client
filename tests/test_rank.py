@@ -72,3 +72,55 @@ class TestFromABrief:
         r = rank_brief(b)
         assert [x["key"] for x in r["lead"]] == ["impact:leads:sk-1"]
         assert r["also"]["by_kind"] == {"impact": 1, "decision": 1, "contract": 1, "local": 1}
+
+
+class TestAKeyIsNotEnough:
+    """A ticket key links work only when the diffs meet. Measured on a week of
+    labelled briefs: items linked by an epic key alone were noise in 24 of 60
+    noise verdicts, and every useful ticket-linked item shared names."""
+
+    def test_a_key_with_nothing_else_in_common_is_weak(self):
+        assert strength(imp("ticket", shares=[])) == 0
+        assert strength(imp("diff_ticket", shares=[])) == 0
+
+    def test_shared_names_keep_it(self):
+        assert strength(imp("ticket", shares=["remindersstartedat"])) == 3
+        assert strength(imp("diff_ticket", shares=["claimflags", "flagitems"])) == 4
+
+    def test_a_key_both_branch_names_carry_keeps_it(self):
+        """Two people named their branches for it: a claim, not an accident."""
+        assert strength(imp("ticket", shares=[], named_both=True)) == 3
+
+    def test_an_unread_diff_keeps_the_old_rule(self):
+        """No diffs to compare (a forge without them) is not evidence of nothing."""
+        assert strength(imp("ticket")) == 3
+
+    def test_a_model_can_still_promote_it(self):
+        assert strength(imp("ticket", shares=[], touches=2)) == 2
+
+    def test_the_payload_says_which(self):
+        b = {"subject": {"ref": "feat/sk-921-last-chance"},
+             "impacts": [
+                 {"repo": "core", "ref": "SK-909-core-a-stage-port3", "shared_tickets": ["SK-909"],
+                  "shares": []},
+                 {"repo": "core", "ref": "SK-921-robot-claim-limit", "shared_tickets": ["SK-921"],
+                  "shares": []},
+                 {"repo": "core", "ref": "SK-916-started-at", "shared_tickets": ["SK-916"],
+                  "shares": ["remindersstartedat"]},
+             ]}
+        r = rank_brief(b)
+        assert [x["key"] for x in r["lead"]] == ["impact:core:SK-921-robot-claim-limit",
+                                                 "impact:core:SK-916-started-at"]
+        assert "`remindersstartedat`" in r["lead"][1]["check"]
+
+
+class TestContentLinks:
+    def test_an_open_gate_naming_what_this_touches_leads(self):
+        assert strength(Item(key="d", kind="decision", label="x", link="gate")) == 3
+        assert strength(Item(key="d", kind="decision", label="x", link="path")) == 0
+
+    def test_rare_shared_signals_lead(self):
+        b = {"impacts": [{"repo": "billing", "ref": "feat/mine", "how":
+                          "both change topic `a.b`, which little else touches (score 6); "
+                          "no ticket links them"}]}
+        assert rank_brief(b)["lead"][0]["link"] == "signal"

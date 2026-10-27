@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
+from ledger.core.estate import is_test_path
+
 
 class Surface(str, Enum):
     TOPIC = "topic"            # event / queue / routing key
@@ -228,7 +230,7 @@ def discover_in_text(repo: str, path: str, text: str) -> list[ContractEdge]:
             # it is on: UIs keep copies of the specs they call.
             out.append(ContractEdge(repo, ContractRef(Surface.HTTP, m.group("path")),
                                     Edge.MENTIONS, path, "declared in spec"))
-    if _TEST_FILE.search(path):
+    if _TEST_FILE.search(path) or is_test_path(path):
         out = [ContractEdge(e.repo, e.contract, Edge.MENTIONS, e.evidence_path, e.evidence_line)
                if e.contract.surface == Surface.HTTP else e for e in out]
     return out

@@ -72,7 +72,8 @@ class Item:
     #: Why it is linked: "relation" (both diffs name a contract), "author"
     #: (same author, pushed together), "diff_ticket" (a ticket key this diff
     #: names), "ticket" (a ticket key in both branch names), "integration"
-    #: (an unreleased commit on an integration branch), "words", or "".
+    #: (an unreleased commit on an integration branch), "signal" (both diffs
+    #: change something rare), "words", or "".
     link: str = ""
     author: str | None = None
     #: The contract both sides name, when there is one.
@@ -82,6 +83,15 @@ class Item:
     directed: bool = False
     #: A model's 0-3 "does this touch your diff?", when one was asked.
     touches: int | None = None
+    #: Names both diffs use, when the other diff was read; None when it was
+    #: not. A ticket key or the clock is a reason to look, not a reason to
+    #: lead: on a real week, items linked by an epic key alone were noise in
+    #: 24 of 60 noise verdicts, and the useful ones shared names with the diff.
+    shares: list[str] | None = None
+    #: The shared key is in BOTH branch names: a claim two people made about
+    #: their work, rather than a key a commit message or a doc happened to
+    #: carry (an epic, a base branch's history, an old comment).
+    named_both: bool = False
     check: str = ""
 
 
@@ -120,12 +130,23 @@ def strength(it: Item) -> int:
             return _promoted(it)
         if it.link == "author":
             return 5
-        if it.link == "diff_ticket":
-            return 4
-        if it.link == "ticket":
+        if it.link == "signal":
+            # Both diffs change topics, tables or migrations little else
+            # touches: content, like a relation, but without a direction.
             return 3
+        if it.link in ("diff_ticket", "ticket"):
+            if it.shares is not None and not it.shares and not it.named_both:
+                # Read, and the two diffs name nothing in common, and nobody
+                # named both branches for the key: it is all they share.
+                # Weak, unless a model says it touches.
+                return _promoted(it)
+            return 4 if it.link == "diff_ticket" else 3
         return _promoted(it)
     if it.kind in ("decision", "contract") and it.directed:
+        return 3
+    if it.kind == "decision" and it.link == "gate":
+        # An open condition of the decision names what this change touches:
+        # the one decision link that is about this change by construction.
         return 3
     return _promoted(it)
 
@@ -140,7 +161,7 @@ def check_line(it: Item, *, yours: list[str]) -> str:
     In a replay this line helped agents set noise aside: told where to look
     and what for, they said "does not apply" instead of guessing.
     """
-    look = ", ".join(f"`{n}`" for n in (it.names or yours)[:4])
+    look = ", ".join(f"`{n}`" for n in (it.names or it.shares or yours)[:4])
     what = f" for {look}" if look else ""
     if it.kind == "impact":
         return (f"how to check: read {it.label}{what}; if none of it appears there, "
@@ -206,6 +227,11 @@ def local_key(line: str) -> str:
     return "local:" + re.sub(r"\s+", " ", line)[:80]
 
 
+def _names_key(ref: str, key: str) -> bool:
+    """Does a branch name carry this ticket key? `feat/sk-909-x` carries `SK-909`."""
+    return bool(key) and re.search(rf"(?<![A-Za-z0-9]){re.escape(key)}(?![0-9])", ref or "", re.I) is not None
+
+
 def _names_in(text: str) -> list[str]:
     return re.findall(r"`([^`]{3,80})`", text or "")
 
@@ -215,6 +241,7 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
     touches = touches or {}
     out: list[Item] = []
     contracts = {c["name"]: c for c in b.get("contracts", [])}
+    own_ref = ((b.get("subject") or {}).get("ref") or "")
 
     def directed(name: str) -> bool:
         c = contracts.get(name)
@@ -241,6 +268,8 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
             link = "author"
         elif "which this diff names" in how:
             link = "diff_ticket"
+        elif "which little else touches" in how:
+            link = "signal"
         elif i.get("kind") == "integration" or i.get("where"):
             link = "integration"
         elif i.get("shared_tickets"):
@@ -252,7 +281,9 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
                  else f"{i['repo']} branch `{i['ref']}`")
         out.append(Item(key=key, kind="impact", label=label, link=link, author=i.get("author"),
                         names=_names_in(rel) if link == "relation" else [],
-                        touches=touches.get(key)))
+                        touches=touches.get(key), shares=i.get("shares"),
+                        named_both=any(_names_key(own_ref, t) and _names_key(i["ref"], t)
+                                       for t in i.get("shared_tickets") or [])))
     for d in b.get("decisions", []):
         key = decision_key(d)
         named = _names_in(d.get("gate_basis") or "") + _names_in(d.get("why") or "")

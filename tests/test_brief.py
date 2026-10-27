@@ -42,6 +42,23 @@ class TestLinkDecisions:
         assert links[0].strength == "strong"
         assert "app/services/documents.py" in links[0].why
 
+    def test_a_path_in_another_repository_is_another_file(self):
+        """Two services each have `app/api/deps.py`; one's ADR is not about the other's."""
+        d = adr(repo="elsewhere", related=["app/services/documents.py"])
+        assert link_decisions(SUBJ, [d], changed_paths=["app/services/documents.py"]) == []
+
+    def test_a_file_most_records_name_is_a_weak_link(self):
+        """Six ADRs naming one runbook all matched a one-line edit to it."""
+        ds = [adr(global_id=f"d{n}", path=f"docs/adr/000{n}-x.md", related=["docs/runtime.md"])
+              for n in range(4)]
+        links = link_decisions(SUBJ, ds, changed_paths=["docs/runtime.md"])
+        assert len(links) == 4 and all(l.strength == "weak" for l in links)
+        assert "4 records of this repository name" in links[0].why
+
+    def test_a_superseded_decision_binds_nothing(self):
+        d = adr(status=DecisionStatus.SUPERSEDED, related=["app/services/documents.py"])
+        assert link_decisions(SUBJ, [d], changed_paths=["app/services/documents.py"]) == []
+
     def test_basename_alone_is_NOT_a_match(self):
         """Basename matching linked five unrelated ADRs to one change, because
         several point at the same common handler."""
@@ -227,7 +244,7 @@ class TestGateContract:
     def test_serialises_to_a_stable_schema(self):
         d = adr(ticket="ABC-321", open_gates=["still lacks binding"])
         payload = build_brief(find_siblings(SUBJ, [SIB, INTEGRATED]), [d]).to_dict()
-        assert payload["schema"] == 19
+        assert payload["schema"] == 20
         assert set(payload) == {"schema", "subject", "recommendation", "confidence", "reasons",
                                 "not_local", "actors", "index", "contracts", "field_breaks",
                                 "contract_breaks", "impacts", "decisions", "ranked"}
@@ -359,8 +376,18 @@ class TestDecisionsInFlight:
                 title="`order_line` ownership moves to billing")
         b = build_brief(find_siblings(SUBJ, [SUBJ]), [d],
                         contracts=[ContractRef(Surface.TABLE, "order_line")])
-        assert b.recommendation == Recommendation.REVIEW_WITH.value   # linked, not blocking
+        # Not listed at all: it is the author's own account of this change.
+        # On a week of labelled briefs, a change's own as-built record shown
+        # back to it was noise every time.
+        assert b.recommendation == Recommendation.PROCEED.value
+        assert b.decisions == []
         assert "unmerged" not in " ".join(b.reasons)
+
+    def test_a_decision_this_diff_writes_is_not_listed(self):
+        d = adr(ticket="ABC-321", title="`order_line` ownership moves to billing")
+        b = build_brief(find_siblings(SUBJ, [SUBJ]), [d], changed_paths=[d.path],
+                        contracts=[ContractRef(Surface.TABLE, "order_line")])
+        assert b.decisions == []
 
     def test_a_merged_decision_is_not_reported_as_drafted(self):
         b = build_brief(find_siblings(SUBJ, [SUBJ]), [adr(ticket="ABC-321")])
@@ -412,7 +439,7 @@ class TestFieldBreaks:
     def test_it_reaches_the_gate_payload(self):
         payload = build_brief(find_siblings(SUBJ, [SUBJ]), [], field_breaks=[self.brk()],
                               own_commits=1).to_dict()
-        assert payload["schema"] == 19
+        assert payload["schema"] == 20
         fb = payload["field_breaks"][0]
         assert fb["field_path"] == "documents[].recipientId"
         assert fb["readers"][0]["repo"] == "orchestrator" and fb["evidence"].startswith("-")
@@ -525,3 +552,47 @@ class TestMergedWorkNamesItsCommit:
                         kind="integration", integration_ref="stage", sha="9f95e28abcdef0123456")
         text = h.summarise(build_brief(find_siblings(SUBJ, [merged]), []).to_dict())
         assert "PLT-201-rating-in-leads (in stage, 9f95e28abcde)" in text
+
+
+class TestSettle:
+    """`review_with` stands only on an item strong enough to lead."""
+
+    def brief(self, lead=(), repeated=None, count=3):
+        from ledger.core.brief import ImpactBrief
+        b = ImpactBrief(repo="r", ref="feat/x", tickets=[], recommendation="review_with",
+                        confidence="high", reasons=["3 change(s) in 1 other repo(s) share this ticket"])
+        b.ranked = {"lead": [{"key": f"k{n}", "strength": s} for n, s in enumerate(lead)],
+                    "also": {"count": count}, "repeated": repeated or {}, "nothing": not lead}
+        return b
+
+    def test_nothing_strong_is_proceed_and_says_why(self):
+        from ledger.core.brief import settle
+        b = settle(self.brief())
+        assert (b.recommendation, b.confidence) == ("proceed", "medium")
+        assert b.reasons[0].startswith("nothing linked to this change is strong enough")
+        assert "3 item(s)" in b.reasons[0]
+
+    def test_confidence_follows_the_strongest_lead(self):
+        from ledger.core.brief import settle
+        assert settle(self.brief(lead=[6, 3])).confidence == "high"
+        assert settle(self.brief(lead=[3])).confidence == "medium"
+        assert settle(self.brief(lead=[2])).confidence == "low"
+
+    def test_a_repeat_still_stands(self):
+        from ledger.core.brief import settle
+        assert settle(self.brief(repeated={"k": "2026-10-26"})).recommendation == "review_with"
+
+    def test_settling_again_after_a_rerank_starts_from_the_links(self):
+        """The server re-ranks with a model, which can promote an item."""
+        from ledger.core.brief import settle
+        b = settle(self.brief())
+        b.ranked = {"lead": [{"key": "k", "strength": 2}], "also": {"count": 2}, "repeated": {}}
+        settle(b)
+        assert (b.recommendation, b.confidence) == ("review_with", "low")
+        assert not any(r.startswith("nothing linked") for r in b.reasons)
+
+    def test_other_verdicts_are_left_alone(self):
+        from ledger.core.brief import settle
+        b = self.brief()
+        b.recommendation = "decision_needed"
+        assert settle(b).recommendation == "decision_needed"

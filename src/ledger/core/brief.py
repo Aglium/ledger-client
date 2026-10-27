@@ -154,6 +154,10 @@ class Impact:
     #: The two diffs share no name; only the other change's REPOSITORY touches
     #: a contract this one does. Not a link the work made, so it never leads.
     by_repository: bool = False
+    #: Names both diffs use (see `core.effect.shared_names`): the content
+    #: behind a link that a ticket key or a clock made. None when the other
+    #: diff was not read, [] when it was and they share nothing.
+    shares: list[str] | None = None
 
 
 @dataclass
@@ -237,6 +241,9 @@ class ImpactBrief:
     #: paths, and the identifiers its added and removed lines name.
     changed_paths: list[str] = field(default_factory=list)
     diff_names: list[str] = field(default_factory=list)
+    #: The verdict and confidence the links alone gave, before `settle`
+    #: weighed them against the ranking. Never serialised.
+    linked: tuple[str, str] | None = None
 
     def to_dict(self) -> dict:
         """Stable shape. A gate plugin depends on this, so it is explicit rather
@@ -286,12 +293,18 @@ class ImpactBrief:
         Version 19 added `impacts[].by_repository`: true when the only link is
         what the other change's repository does, not what its diff does.
 
+        Version 20 added `impacts[].shares`: the names both diffs use, so a
+        link made by a ticket key or the clock can say whether the work meets.
+        It also stopped listing in-flight branches with no work of their own,
+        decisions the change itself writes, and superseded decisions, and
+        made `review_with` depend on an item strong enough to lead.
+
         Additive changes still bump the version, because a consumer is free to
         validate strictly, and finding out from a production gate that the
         payload grew a key is not acceptable.
         """
         return {
-            "schema": 19,
+            "schema": 20,
             "subject": {
                 "repo": self.repo, "ref": self.ref, "tickets": self.tickets,
                 "resolved": self.resolved, "base": self.base, "own_commits": self.own_commits,
@@ -319,6 +332,11 @@ class ImpactBrief:
 def _norm_rel(rel: str) -> str:
     """`../../app/services/x.py` -> `app/services/x.py`."""
     return re.sub(r"^(?:\.\./)+", "", (rel or "").strip()).lstrip("./")
+
+
+#: More decisions of one repository than this naming one file make it a shared
+#: page rather than the subject of any of them.
+SHARED_FILE = 3
 
 
 def _related_hit(related: list[str], changed_paths: list[str]) -> str | None:
@@ -489,7 +507,26 @@ def link_decisions(
     subject_tokens = _tokens(change.ref) | _tokens(change.title or "")
     out: list[DecisionLink] = []
 
+    # How many decisions of one repository name each file. A file most of a
+    # repository's records point at (a runbook, an overview, the README) says
+    # nothing about which of them a change to it bears on: six ADRs naming
+    # `docs/runtime.md` all matched a one-line edit there.
+    named_by: dict[tuple[str, str], int] = {}
     for d in decisions:
+        for rel in {_norm_rel(r) for r in d.related}:
+            named_by[(d.repo, rel)] = named_by.get((d.repo, rel), 0) + 1
+    changed_set = set(changed_paths)
+
+    for d in decisions:
+        # The change's own record: written or edited by this very diff, or
+        # drafted on this branch. It is the author's account of the change,
+        # not something the change has to answer to.
+        if d.repo == change.repo and (d.path in changed_set or (d.ref and d.ref == change.ref)):
+            continue
+        # Superseded and rejected records bind nothing. Their options are
+        # history; the record that replaced one is what a change answers to.
+        if d.status in (DecisionStatus.SUPERSEDED, DecisionStatus.REJECTED):
+            continue
         strength: LinkStrength | None = None
         why = ""
         basis = "ticket"
@@ -501,8 +538,15 @@ def link_decisions(
         if (hit := _names_contract(f"{d.title}\n{d.body}", contracts)) is not None:
             strength, why = LinkStrength.STRONG, f"names `{hit.name}`, a {hit.surface.value} this change touches"
             basis = "contract"
-        elif (rel := _related_hit(d.related, changed_paths)) is not None:
-            strength, why = LinkStrength.STRONG, f"names {rel}, which this change touches"
+        elif d.repo == change.repo and (rel := _related_hit(d.related, changed_paths)) is not None:
+            # Same repository only: a path is relative to its repository, and
+            # another service's `app/api/deps.py` is a different file.
+            if named_by.get((d.repo, rel), 0) > SHARED_FILE:
+                strength = LinkStrength.WEAK
+                why = (f"names {rel}, which this change touches and "
+                       f"{named_by[(d.repo, rel)]} records of this repository name")
+            else:
+                strength, why = LinkStrength.STRONG, f"names {rel}, which this change touches"
             basis = "path"
         elif governs_ticket:
             strength, why = LinkStrength.STRONG, f"governs ticket {d.ticket}"
@@ -860,3 +904,50 @@ def build_brief(
     # already says how many repositories and changes it is.
     brief.actors = list(seen)[:6]
     return brief
+
+
+#: What `settle` says when it turns a linked-but-weak brief into `proceed`.
+NOTHING_LEADS = ("nothing linked to this change is strong enough to check first: "
+                 "the {n} item(s) below share only a ticket key, a file or a word with it")
+
+
+def settle(b: ImpactBrief) -> ImpactBrief:
+    """Let `review_with` stand only when an item is strong enough to lead.
+
+    The verdict used to be `review_with` (high) whenever anything at all was
+    linked, so the ranking could hide noise but never say "nothing here". On
+    a real week that verdict was right 36% of the time; most of the rest were
+    briefs whose every item shared an epic key, a common file or a word.
+
+    Confidence follows the strongest item that leads: a link both diffs make
+    (relation, same author pushing together) is high, a ticket key backed by
+    shared names or a directed decision medium, a model's promotion low.
+
+    Safe to call again after a re-rank (the server's, with a model): it
+    starts from the verdict the links gave, kept on the brief.
+    """
+    if b.linked is None:
+        b.linked = (b.recommendation, b.confidence)
+    rec, conf = b.linked
+    note_prefix = NOTHING_LEADS.split("{n}")[0]
+    b.reasons = [r for r in b.reasons if not r.startswith(note_prefix)]
+    b.recommendation, b.confidence = rec, conf
+    if rec != Recommendation.REVIEW_WITH.value:
+        return b
+    ranked = b.ranked or {}
+    lead = ranked.get("lead") or []
+    if lead:
+        top = max(int(x.get("strength") or 0) for x in lead)
+        by_lead = "high" if top >= 5 else "medium" if top >= 3 else "low"
+        # Never above what the links themselves claimed: "same author, minutes
+        # apart" was found as a question and stays one.
+        order = ("low", "medium", "high")
+        b.confidence = min(by_lead, conf, key=lambda c: order.index(c) if c in order else 2)
+        return b
+    if ranked.get("repeated"):
+        return b                     # shown before on this branch, still standing
+    n = int((ranked.get("also") or {}).get("count") or 0)
+    b.recommendation, b.confidence = Recommendation.PROCEED.value, "medium"
+    b.reasons.insert(0, NOTHING_LEADS.format(n=n))
+    return b
+

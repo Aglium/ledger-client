@@ -83,6 +83,35 @@ def is_test_double(path: str | None) -> bool:
     return bool(_TEST_DOUBLE.search(path or ""))
 
 
+#: Where a change's tests live, for deciding what a change TOUCHES. Wider than
+#: `_TEST_DOUBLE` in the directory names it accepts (`tests_functional/`,
+#: `integration-tests/`, `e2e-tests/`) and in the file names (`FooTest.php`,
+#: `foo_test.go`), narrower in that it leaves out `features/` and `perf/`,
+#: which are source directories as often as test ones.
+#:
+#: Measured on a week of labelled briefs: seven noise verdicts came from names
+#: that only a test file contained -- a seed value read as a topic, a column in
+#: a functional test's schema dump read as a shared table.
+_TEST_PATH = re.compile(
+    r"(^|/)(__tests__|__mocks__|mocks?|stubs?|tests?|specs?|e2e|fixtures?|testdata|test-data"
+    r"|cypress|playwright)"
+    r"([_-][\w-]*)?/"
+    r"|(^|/)[\w-]+[_-](tests?|specs?)/"
+    r"|(^|/)(test|conftest)[_.][^/]*$"
+    r"|[_.-](test|spec)s?\.[a-z]+$"
+    r"|[_.-](stub|stubs|mock|mocks|fake|fakes)\.[a-z]+$",
+    re.I,
+)
+#: `WizzairClientTest.php`, `OrderServiceTests.cs`: the class-name convention.
+_TEST_CLASS = re.compile(r"[a-z0-9]Tests?\.(php|java|kt|kts|cs|scala|swift|groovy)$")
+
+
+def is_test_path(path: str | None) -> bool:
+    """Is this file part of a change's tests rather than what it ships?"""
+    p = path or ""
+    return bool(_TEST_PATH.search(p) or _TEST_CLASS.search(p))
+
+
 def placeholder(name: str | None) -> bool:
     """Is this name a test's argument rather than a contract?
 

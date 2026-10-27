@@ -206,3 +206,32 @@ class TestWhatARealDiffTaughtIt:
     def test_no_shared_name_is_never_called_unrelated(self):
         line, _, _ = relation_line(delta_of("x", [F("a.py", "+ pass\n")]), {TOPIC: {Edge.CONSUMES}})
         assert "treat it as unrelated" not in line
+
+
+class TestSharedNames:
+    def test_names_from_shipped_code_only(self):
+        from ledger.core.effect import names_in
+        assert names_in("app/adapter.py", "+    started = payload['remindersStartedAt']\n") \
+            == {"remindersstartedat"}
+        assert names_in("tests/test_adapter.py", "+ reminders_started_at = 1\n") == set()
+        assert names_in("docs/runtime.md", "+ reminders_started_at is read\n") == set()
+
+    def test_snake_and_camel_are_one_name(self):
+        from ledger.core.effect import names_in
+        assert names_in("a.py", "+x = reminders_started_at\n") == names_in(
+            "b.ts", "+const x = remindersStartedAt\n")
+
+    def test_plain_and_common_names_link_nothing(self):
+        from ledger.core.effect import names_in
+        assert names_in("a.py", "+status = value\n+created_at = updated_at\n") == set()
+
+    def test_one_long_name_or_two_short_ones(self):
+        from ledger.core.effect import shared_names
+        assert shared_names({"remindersstartedat"}, {"remindersstartedat"}) == ["remindersstartedat"]
+        assert shared_names({"flagid"}, {"flagid"}) == []
+        assert shared_names({"flagid", "unflag"}, {"flagid", "unflag", "x"}) == ["flagid", "unflag"]
+
+    def test_a_delta_carries_them(self):
+        d = delta_of("r", [F("app/a.py", "+claim_flags = read()\n"),
+                           F("tests/test_a.py", "+fixture_only_name = 1\n")])
+        assert d.names == {"claimflags"}

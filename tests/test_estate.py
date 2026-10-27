@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from ledger.core.estate import is_test_path
 from ledger.core.estate import (
     NONE, OWN, WEAK, duplicates, placeholder, same_lineage, strength, is_test_double,
     vendored, weight,
@@ -176,3 +177,33 @@ class TestTheCheapLineageTest:
     ])
     def test_unrelated(self, a, b):
         assert not same_lineage(a, b)
+
+
+class TestIsTestPath:
+    """What a change's tests are, for deciding what the change touches."""
+
+    @pytest.mark.parametrize("path", [
+        "tests_functional/schema.sql",
+        "tests_functional/api/test_robot_claim_entry_facts.py",
+        "tests/Unit/AppBundle/Service/WizzairClientTest.php",
+        "integration-tests/orders.go",
+        "e2e-tests/login.ts",
+        "pkg/orders/orders_test.go",
+        "src/features/x.test.ts",
+        "conftest.py",
+        "src/__mocks__/api.ts",
+        "perf/vendor_stub.py",
+    ])
+    def test_tests(self, path):
+        assert is_test_path(path)
+
+    @pytest.mark.parametrize("path", [
+        "src/AppBundle/Service/Wizzair/WizzairClient.php",
+        "src/features/new-version/audience.ts",
+        "app/testimonials/view.py",
+        "app/config/parameters.yml.dist",
+        "contest/rules.py",
+        "src/latest/x.py",
+    ])
+    def test_shipped_code(self, path):
+        assert not is_test_path(path)

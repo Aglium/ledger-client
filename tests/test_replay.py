@@ -53,13 +53,13 @@ def merge(p, branch, files, *, pr, email="ann@example.com"):
 def estate(tmp_path):
     root = tmp_path / "src"
     orders = repo(root, "orders", {"app/models.py": "__tablename__ = 'order_line'\n"})
-    billing = repo(root, "billing", {"app/db.py": "__tablename__ = 'order_line'\n"})
+    billing = repo(root, "billing", {"app/db.py": "@consumer.subscribe(\"order.line.archived.v1\")\ndef on_archived(payload):\n    pass\n"})
     # Two halves of one ticket, in two repositories.
     merge(orders, "feat/abc-7-read-lines", {"app/read.py": "x = 1\n"}, pr=1)
     merge(billing, "feat/abc-7-split-lines", {"app/split.py": "y = 1\n"}, pr=2, email="bob@example.com")
-    # Touches a table the other repository also has, with no ticket at all.
+    # Publishes what the other repository consumes, with no ticket at all.
     merge(orders, "tidy-order-lines",
-          {"app/archive.py": "class Archived:\n    __tablename__ = 'order_line'\n"}, pr=3)
+          {"app/archive.py": "producer.send(\"order.line.archived.v1\", {\"line_ref\": 1})\n"}, pr=3)
     # Touches nothing anybody else has.
     merge(orders, "feat/abc-9-readme", {"README.md": "hello\n"}, pr=4)
     # A release train merging forward is not a change.
@@ -87,9 +87,9 @@ class TestAChangeIsBriefedAsItWas:
     def test_its_own_diff_is_read_though_it_merged_long_ago(self, estate):
         cfg, root = estate
         b = by_ref(rp.run(cfg, LocalGitAdapter(str(root)), since=SINCE, author=None))["tidy-order-lines"].brief
-        # No ticket links it; the table it touches does.
+        # No ticket links it; the topic it publishes does.
         assert b["recommendation"] == "review_with"
-        assert [c["name"] for c in b["contracts"] if c["also_touched_by"]] == ["order_line"]
+        assert [c["name"] for c in b["contracts"] if c["also_touched_by"]] == ["order.line.archived.v1"]
         assert b["subject"]["ref"] == "tidy-order-lines" and b["subject"]["own_commits"] == 1
 
     def test_a_change_with_nothing_to_say_is_silent(self, estate):
@@ -159,7 +159,7 @@ class TestTheReport:
         assert flight["link"].startswith("https://github.com/acme/billing/commit/")
         table = by_ref(got)["tidy-order-lines"]
         shared = next(e for e in table.evidence if e["kind"] == "contract")
-        assert "order_line" in shared["text"] and "app/db.py" in shared["text"]
+        assert "order.line.archived.v1" in shared["text"] and "app/db.py" in shared["text"]
         assert "/blob/" in shared["link"] and shared["link"].endswith("/app/db.py")
         text = rp.render(got)
         assert "Evidence, as of " in text
@@ -275,15 +275,15 @@ class TestNoHindsight:
         root = tmp_path / "src"
         orders = dated_repo(root, "orders", {"app/models.py": "x = 1\n"}, days_ago=30)
         billing = dated_repo(root, "billing", {"app/db.py": "y = 1\n"}, days_ago=30)
-        # The change: started 10 days ago, merged 9 days ago, touches `order_line`.
+        # The change: started 10 days ago, merged 9 days ago, publishes a topic.
         dgit(orders, "checkout", "-q", "-b", "tidy-order-lines", days_ago=10)
-        commit(orders, {"app/archive.py": "class A:\n    __tablename__ = 'order_line'\n"},
+        commit(orders, {"app/archive.py": "producer.send(\"order.line.archived.v1\", {\"line_ref\": 1})\n"},
                "archive", days_ago=10)
         dgit(orders, "checkout", "-q", "main", days_ago=9)
         dgit(orders, "merge", "-q", "--no-ff", "tidy-order-lines", "-m",
              "Merge pull request #3 from acme/tidy-order-lines", days_ago=9)
-        # Billing starts using the same table: before, or after, that change started.
-        commit(billing, {"app/db.py": "__tablename__ = 'order_line'\n"}, "use order_line",
+        # Billing starts consuming it: before, or after, that change started.
+        commit(billing, {"app/db.py": "@consumer.subscribe(\"order.line.archived.v1\")\ndef on_archived(payload):\n    pass\n"}, "consume it",
                days_ago=billing_adds_it_days_ago)
         p = tmp_path / "l.yml"
         p.write_text("org: acme\nproject_keys: [ABC]\nintegration_branches: []\n")
@@ -326,9 +326,11 @@ class TestSquashMerges:
         root = tmp_path / "src"
         orders = repo(root, "orders", {"app/models.py": "x = 1\n"})
         billing = repo(root, "billing", {"app/db.py": "y = 1\n"})
-        merge(billing, "feat/abc-7-split-lines", {"app/split.py": "y = 2\n"}, pr=2,
+        merge(billing, "feat/abc-7-split-lines", {"app/split.py": "split(order_lines)\n"}, pr=2,
               email="bob@example.com")
-        (orders / "app" / "read.py").write_text("z = 1\n")
+        # The key is in a commit message only, so the two halves must also
+        # name something in common to be linked strongly enough to say so.
+        (orders / "app" / "read.py").write_text("order_lines = read()\n")
         git(orders, "add", "-A")
         git(orders, "commit", "-q", "-m", "ABC-7 read order lines (#12)")
         p = tmp_path / "l.yml"

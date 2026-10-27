@@ -849,6 +849,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     diff_tickets: list[str] = []
     subject_signals: set = set()
     files: list = []
+    shipped: list = []
     edges: list = []
     bound_edges: dict = {}
     if local is not None:
@@ -866,20 +867,25 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         # Uncommitted work last, so a file changed both ways keeps both hunks.
         files = files + [f for f in pending]
         changed = [f.path for f in files]
+        # What the change ships, without its tests. A name that only a test
+        # file contains -- a seed value, a column in a test schema dump, a
+        # mocked route -- is not something this change does to anyone else.
+        from ledger.core.estate import is_test_path
+        shipped = [f for f in files if not is_test_path(f.path)]
         # The ticket a branch name does not carry. From the feedback: "the
         # ticket key appears in the diff body (the code docstring and contract
         # doc both say XY-525) even though it's missing from the branch name
         # and commit message", and the brief said `proceed` while the other
         # half of the change sat in another repository.
-        in_diff = set(extract_tickets(" ".join(f.body or "" for f in files), cfg.project_keys))
+        in_diff = set(extract_tickets(" ".join(f.body or "" for f in shipped), cfg.project_keys))
         diff_tickets = sorted(in_diff - set(extract_tickets(ref, cfg.project_keys)))
         # What this change touches, from the diff already in hand. Computed
         # rather than looked up so a branch created since the last sync -- the
         # moment somebody asks about it -- still links.
         from ledger.pipeline.signals import signals_of
-        subject_signals = signals_of(files)
+        subject_signals = signals_of(shipped)
         edges = []
-        for f in files:
+        for f in shipped:
             edges.extend(discover_in_text(repo, f.path, f.body))
         touched_set = {e.contract for e in edges}
         # A change often touches a topic through its constant, not the literal:
@@ -889,7 +895,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         if bound:
             from ledger.core.bindings import usages_in
             idents = {i: v["raws"] for i, v in bound.items()}
-            for f in files:
+            for f in shipped:
                 for u in usages_in(f.path, f.body, idents):
                     # Every topic the identifier is bound to, not the
                     # alphabetically first one. An identifier here is
@@ -953,9 +959,19 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                 # contract; the direction adds to that, it does not narrow it.
                 owners[c] = sorted(set(owners.get(c, [])) | set(directed)) if live else directed
 
+        # A dotted literal is a topic only where somebody sends or receives it.
+        # Named and never published or consumed by anyone else, it is a
+        # service id, a seed value or a config key that happens to have dots
+        # (`doctrine.orm.default_entity_manager`, `reg.brazil`), and listing
+        # the repositories that also spell it sent reviewers to read them.
+        for c in touched:
+            if c.surface == Surface.TOPIC and not any(
+                    p["uses"] in ("publishes", "consumes") for p in parties.get(c, ())):
+                owners.pop(c, None)
+
         # Does this diff delete a field another repo depends on? The one
         # finding here that is evidence rather than inference.
-        diffs = {f.path: f.body for f in files}
+        diffs = {f.path: f.body for f in shipped}
         try:
             texts = vcs.read_files(repo, ref, list(diffs))
         except ForgeUnavailable:
@@ -1011,7 +1027,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                         # So `removed_fields` sees the file as about the topic
                         # it never spells. Used for that check only.
                         about[path] = text + "\n" + "\n".join(sorted(reached))
-            gone = delta_of(repo, files).keys_removed
+            gone = delta_of(repo, shipped).keys_removed
             deps = index.field_readers(sorted(named, key=lambda c: (c.surface.value, c.name)),
                                        gone, exclude=repo)
         if deps:
@@ -1063,10 +1079,11 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     b.synced_at = index.synced_at()
     b.unreadable_repos = sorted(set(unreadable) | set(index.unreadable))
     b.changed_paths = changed
-    b.diff_names = diff_names(files)
+    b.diff_names = diff_names(shipped)
     from ledger.core.rank import rank_brief
     b.ranked = rank_brief(b.to_dict())
-    return b
+    from ledger.core.brief import settle
+    return settle(b)
 
 
 def diff_names(files) -> list[str]:
@@ -1081,8 +1098,10 @@ def diff_names(files) -> list[str]:
 
 
 #: In-flight items described per answer. Each costs a diff of another
-#: repository; renderers show six, and a seventh nobody reads is not worth one.
-DESCRIBED = 6
+#: repository (cached by commit). More than renderers show, because what the
+#: diffs share now decides which items lead: on a real week the item that
+#: mattered sat below six that shared only an epic key.
+DESCRIBED = 12
 
 #: (repo, commit, base) -> Delta. A commit's diff does not change, so this is
 #: safe to keep for the life of the process; the bound stops a long-running
@@ -1178,10 +1197,15 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
     """
     from ledger.core.effect import ask_line, delta_of, effect_line, evidence_line, relation_line
 
-    from ledger.core.effect import Delta, opposite_moves
+    from ledger.core.effect import Delta, opposite_moves, shared_names
     mine = delta_of("", your_files) if your_files else Delta()
     your_keys = mine.keys_added | mine.keys_removed
     chosen = sorted(impacts, key=lambda i: bool(i.where))[:DESCRIBED]
+    #: Branches whose diff over their own base is empty: everything they
+    #: carry is already on the branch they were cut from. On a real estate,
+    #: thirteen "stage port" branches of one epic, each with no commit beyond
+    #: `stage`, led brief after brief in another repository.
+    idle: list = []
     # What a model made of each one at sync time, where there is a server
     # that asked. Read, never requested here.
     summaries = index.behaviours([(i.repo, i.sha) for i in chosen if i.sha]) \
@@ -1194,6 +1218,10 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
         if delta is None:
             i.ask = ask_line(i.ref, i.author, None, [])
             continue
+        if delta.files == 0 and i.kind in ("branch", "pr"):
+            idle.append(i)
+            continue
+        i.shares = shared_names(mine.names, delta.names)[:6]
         i.effect = effect_line(delta)
         # What the index knows of the other repository's part in a contract
         # this change touches, for when the two diffs share no name.
@@ -1209,6 +1237,8 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
         i.by_repository = shared is None and role is not None
         i.conflict = opposite_moves(delta, mine)
         i.ask = ask_line(i.ref, i.author, shared, fields)
+    if idle:
+        impacts[:] = [i for i in impacts if all(i is not x for x in idle)]
 
 
 #: A verdict this may overturn. `review_with` and anything stronger already

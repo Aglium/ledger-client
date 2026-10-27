@@ -81,6 +81,12 @@ class Delta:
     keys_added: set[str] = field(default_factory=set)
     keys_removed: set[str] = field(default_factory=set)
     files: int = 0
+    #: Identifiers the shipped code's changed lines name (`claim_flags`,
+    #: `remindersStartedAt`), normalised by `name_key`. Tests and prose are
+    #: left out. What two diffs both name is the cheapest evidence that two
+    #: changes are about the same thing -- and its absence the cheapest
+    #: evidence that a shared ticket key is all they have in common.
+    names: set[str] = field(default_factory=set)
 
     @property
     def contracts(self) -> dict[ContractRef, set[Edge]]:
@@ -118,6 +124,52 @@ def _keys(text: str) -> set[str]:
     found = {m.group(1) for m in _KEY.finditer(text)}
     found |= {m.group(1) for line in text.splitlines() if (m := _ATTR.match(line))}
     return {k for k in found if k.lower() not in _PLAIN_KEYS}
+
+
+#: An identifier worth comparing: snake_case or camelCase, five characters or
+#: more. Plain words (`status`, `value`) are in every diff.
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{4,}")
+#: Prose and records: they name what the code names without doing it.
+_PROSE = re.compile(r"\.(md|markdown|rst|txt|adoc)$|(^|/)(docs?|CHANGELOG)[/.]", re.I)
+#: Names every service has, which link nothing.
+_COMMON_NAMES = frozenset({
+    "createdat", "updatedat", "deletedat", "requestid", "traceid", "spanid", "userid",
+    "isactive", "isdeleted", "statuscode", "errorcode", "errormessage", "pagesize",
+    "nextcursor", "contenttype", "setup", "teardown", "beforeeach", "aftereach",
+    "classname", "onclick", "usestate", "useeffect", "tostring", "getlogger",
+})
+
+
+def name_key(name: str) -> str:
+    """`reminders_started_at` and `remindersStartedAt` are one name."""
+    return name.replace("_", "").lower()
+
+
+def names_in(path: str, body: str) -> set[str]:
+    """The identifiers a file's changed lines name, normalised. Not its tests or prose."""
+    from ledger.core.estate import is_test_path
+    if is_test_path(path) or _PROSE.search(path or ""):
+        return set()
+    out = set()
+    for t in _IDENT.findall(body or ""):
+        if t.startswith("__") or not ("_" in t.strip("_") or any(c.isupper() for c in t[1:])):
+            continue
+        k = name_key(t)
+        if len(k) >= 5 and k not in _COMMON_NAMES:
+            out.add(k)
+    return out
+
+
+def shared_names(a: set[str], b: set[str]) -> list[str]:
+    """Names both diffs use, when they are enough to say the changes meet.
+
+    One long name (`remindersstartedat`) is specific enough on its own; short
+    ones (`flagid`) need company.
+    """
+    both = sorted(a & b, key=lambda n: (-len(n), n))
+    if len(both) >= 2 or (both and len(both[0]) >= 10):
+        return both
+    return []
 
 
 def delta_of(repo: str, files, *, extra: dict[ContractRef, set[Edge]] | None = None) -> Delta:
@@ -159,6 +211,7 @@ def delta_of(repo: str, files, *, extra: dict[ContractRef, set[Edge]] | None = N
                         # called `if`, on a real diff, in a real brief.
                         if len(name) >= 2 and name not in NOT_A_TABLE:
                             d.tables.append(f"{verb} table `{name}`")
+        d.names |= names_in(f.path, f.body or "")
         ka, kr = _keys(plus), _keys(minus)
         d.keys_added |= ka - kr
         d.keys_removed |= kr - ka
