@@ -36,6 +36,7 @@ MCP, CLI -- shows the same choice, and a replay can score it offline.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 
 #: Items in the lead list. Three is what a reader still weighs one by one.
@@ -92,6 +93,10 @@ class Item:
     #: their work, rather than a key a commit message or a doc happened to
     #: carry (an epic, a base branch's history, an old comment).
     named_both: bool = False
+    #: No other item carries this key: one change somebody tagged with it,
+    #: not an epic spread over a dozen branches. On a real week the useful
+    #: key-only links were each the one counterpart in another repository.
+    sole: bool = False
     check: str = ""
 
 
@@ -134,8 +139,13 @@ def strength(it: Item) -> int:
             # Both diffs change topics, tables or migrations little else
             # touches: content, like a relation, but without a direction.
             return 3
+        if it.link == "integration":
+            # Merged to an integration branch, not released: it lands with
+            # this. Leads when the diffs share names or it is the key's one
+            # change; a commit that merely carries an epic key does not.
+            return 3 if (it.shares or it.sole) else _promoted(it)
         if it.link in ("diff_ticket", "ticket"):
-            if it.shares is not None and not it.shares and not it.named_both:
+            if it.shares is not None and not it.shares and not it.named_both and not it.sole:
                 # Read, and the two diffs name nothing in common, and nobody
                 # named both branches for the key: it is all they share.
                 # Weak, unless a model says it touches.
@@ -257,6 +267,7 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
     for c in b.get("contract_breaks", []):
         out.append(Item(key=f"break:{c['surface']}:{c['name']}", kind="break",
                         label=f"{c['surface']} `{c['name']}`", names=[c["name"]], directed=True))
+    per_key = Counter(t for i in b.get("impacts", []) for t in set(i.get("shared_tickets") or []))
     for i in b.get("impacts", []):
         how, rel = i.get("how") or "", i.get("relation") or ""
         by_repo = i.get("by_repository")
@@ -283,7 +294,9 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
                         names=_names_in(rel) if link == "relation" else [],
                         touches=touches.get(key), shares=i.get("shares"),
                         named_both=any(_names_key(own_ref, t) and _names_key(i["ref"], t)
-                                       for t in i.get("shared_tickets") or [])))
+                                       for t in i.get("shared_tickets") or []),
+                        sole=bool(i.get("shared_tickets"))
+                        and all(per_key[t] == 1 for t in i["shared_tickets"])))
     for d in b.get("decisions", []):
         key = decision_key(d)
         named = _names_in(d.get("gate_basis") or "") + _names_in(d.get("why") or "")

@@ -1,6 +1,6 @@
 """Which items of a brief lead. The rules are measured, so each has a test."""
 
-from ledger.core.rank import Item, rank, rank_brief, strength
+from ledger.core.rank import Item, items_of, rank, rank_brief, strength
 
 
 def imp(link, **kw):
@@ -70,14 +70,32 @@ class TestFromABrief:
                             "why": "names `user`, a table this change touches"}],
              "not_local": ["table `twilio_template` is also touched on `stage` in this repository"]}
         r = rank_brief(b)
-        assert [x["key"] for x in r["lead"]] == ["impact:leads:sk-1"]
-        assert r["also"]["by_kind"] == {"impact": 1, "decision": 1, "contract": 1, "local": 1}
+        # The stage commit is the one change carrying SK-1: it leads too.
+        assert [x["key"] for x in r["lead"]] == ["impact:leads:sk-1", "impact:crm:0295f3833b5e"]
+        assert r["also"]["by_kind"] == {"decision": 1, "contract": 1, "local": 1}
 
 
 class TestAKeyIsNotEnough:
     """A ticket key links work only when the diffs meet. Measured on a week of
     labelled briefs: items linked by an epic key alone were noise in 24 of 60
     noise verdicts, and every useful ticket-linked item shared names."""
+
+    def test_the_one_change_a_key_names_keeps_it(self):
+        """One counterpart tagged with the key is a pointer, not an epic."""
+        assert strength(imp("diff_ticket", shares=[], sole=True)) == 4
+
+    def test_an_unreleased_merge_leads_on_names_or_a_sole_key(self):
+        assert strength(imp("integration")) == 0
+        assert strength(imp("integration", shares=[])) == 0
+        assert strength(imp("integration", shares=["reminderlimitexceeded"])) == 3
+        assert strength(imp("integration", shares=[], sole=True)) == 3
+
+    def test_sole_is_counted_across_the_brief(self):
+        def i(ref, t):
+            return {"repo": "core", "ref": ref, "kind": "branch", "how": "",
+                    "shared_tickets": [t], "shares": []}
+        items = {x.label: x for x in items_of({"impacts": [i("a", "EP-1"), i("b", "EP-1"), i("c", "T-2")]})}
+        assert [items[f"core branch `{r}`"].sole for r in "abc"] == [False, False, True]
 
     def test_a_key_with_nothing_else_in_common_is_weak(self):
         assert strength(imp("ticket", shares=[])) == 0
@@ -102,6 +120,8 @@ class TestAKeyIsNotEnough:
         b = {"subject": {"ref": "feat/sk-921-last-chance"},
              "impacts": [
                  {"repo": "core", "ref": "SK-909-core-a-stage-port3", "shared_tickets": ["SK-909"],
+                  "shares": []},
+                 {"repo": "core", "ref": "SK-909-core-b-stage-port4", "shared_tickets": ["SK-909"],
                   "shares": []},
                  {"repo": "core", "ref": "SK-921-robot-claim-limit", "shared_tickets": ["SK-921"],
                   "shares": []},
