@@ -17,7 +17,7 @@
 
 # The client release this plugin was built with. Kept equal to plugin.json and
 # the package version by the tests.
-LEDGER_VERSION=0.3.0
+LEDGER_VERSION=0.4.0
 PACKAGE=${LEDGER_PACKAGE:-"aglium-ledger[mcp]==${LEDGER_VERSION}"}
 
 find_ledger() {

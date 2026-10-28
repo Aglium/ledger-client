@@ -1,6 +1,6 @@
 {
   "name": "ledger",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Before you push: what this change affects in the repositories you are not looking at, and whether someone needs to decide something first.",
   "author": {
     "name": "Aglium",
