@@ -56,7 +56,7 @@ class ContractEdge:
 #: Bump whenever a change here alters what discover() returns. The stored index
 #: keys on it: rows written by an older extractor are treated as stale and read
 #: live until the next sync rescans them, so an upgrade never serves old answers.
-EXTRACTOR_VERSION = "5"
+EXTRACTOR_VERSION = "6"
 
 # A dotted, lowercase literal is how most brokers name a topic.
 _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]")

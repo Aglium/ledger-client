@@ -225,6 +225,15 @@ class TestSharedNames:
         from ledger.core.effect import names_in
         assert names_in("a.py", "+status = value\n+created_at = updated_at\n") == set()
 
+    def test_keywords_stock_names_and_lock_files_link_nothing(self):
+        from ledger.core.effect import names_in, shared_names
+        a = names_in("m/1.sql", "+CREATE TABLE foo (id int);\n+ALTER TABLE bar ADD x;\n")
+        b = names_in("m/2.sql", "+CREATE TABLE baz (id int);\n+ALTER TABLE qux ADD y;\n")
+        assert shared_names(a, b) == []
+        assert names_in("a.py", "+raise ValueError(x)\n") == set()
+        assert names_in("package-lock.json", '+"node_modules/left-pad": {}\n') == set()
+        assert names_in("a.py", "+TOPIC = ORDER_LINE_ARCHIVED\n") == {"orderlinearchived"}
+
     def test_one_long_name_or_two_short_ones(self):
         from ledger.core.effect import shared_names
         assert shared_names({"remindersstartedat"}, {"remindersstartedat"}) == ["remindersstartedat"]

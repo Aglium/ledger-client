@@ -193,6 +193,8 @@ class TestIsTestPath:
         "conftest.py",
         "src/__mocks__/api.ts",
         "perf/vendor_stub.py",
+        "spec/models/user_spec.rb",
+        "src/order.spec.ts",
     ])
     def test_tests(self, path):
         assert is_test_path(path)
@@ -204,6 +206,15 @@ class TestIsTestPath:
         "app/config/parameters.yml.dist",
         "contest/rules.py",
         "src/latest/x.py",
+        # An API description is the contract, not a test of it.
+        "specs/openapi.yaml",
+        "api/openapi-spec.yaml",
+        "docs/api.spec.json",
+        "contracts/order-spec.json",
+        # Configuration for a test environment ships.
+        "config/test.yaml",
+        "src/settings/test.py",
+        "src/ab-test.ts",
     ])
     def test_shipped_code(self, path):
         assert not is_test_path(path)

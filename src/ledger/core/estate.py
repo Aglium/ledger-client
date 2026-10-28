@@ -93,15 +93,21 @@ def is_test_double(path: str | None) -> bool:
 #: that only a test file contained -- a seed value read as a topic, a column in
 #: a functional test's schema dump read as a shared table.
 _TEST_PATH = re.compile(
-    r"(^|/)(__tests__|__mocks__|mocks?|stubs?|tests?|specs?|e2e|fixtures?|testdata|test-data"
+    r"(^|/)(__tests__|__mocks__|mocks?|stubs?|tests?|e2e|fixtures?|testdata|test-data"
     r"|cypress|playwright)"
     r"([_-][\w-]*)?/"
-    r"|(^|/)[\w-]+[_-](tests?|specs?)/"
-    r"|(^|/)(test|conftest)[_.][^/]*$"
-    r"|[_.-](test|spec)s?\.[a-z]+$"
+    r"|(^|/)[\w-]+[_-]tests?/"
+    r"|(^|/)(test_[^/]*|conftest\.py)$"
+    r"|[_.]tests?\.[a-z]+$"
     r"|[_.-](stub|stubs|mock|mocks|fake|fakes)\.[a-z]+$",
     re.I,
 )
+#: `spec` is two words: a test suite (`spec/models/user_spec.rb`,
+#: `order.spec.ts`) and an API description (`specs/openapi.yaml`,
+#: `api.spec.json`). Only code under it is a test; the description is the
+#: contract itself.
+_SPEC_PATH = re.compile(r"(^|/)specs?/|[_.]specs?\.[a-z]+$", re.I)
+_DESCRIPTION = re.compile(r"\.(ya?ml|json|proto|graphql|gql|avsc|raml|md|txt|xml)$", re.I)
 #: `WizzairClientTest.php`, `OrderServiceTests.cs`: the class-name convention.
 _TEST_CLASS = re.compile(r"[a-z0-9]Tests?\.(php|java|kt|kts|cs|scala|swift|groovy)$")
 
@@ -109,7 +115,9 @@ _TEST_CLASS = re.compile(r"[a-z0-9]Tests?\.(php|java|kt|kts|cs|scala|swift|groov
 def is_test_path(path: str | None) -> bool:
     """Is this file part of a change's tests rather than what it ships?"""
     p = path or ""
-    return bool(_TEST_PATH.search(p) or _TEST_CLASS.search(p))
+    if _TEST_PATH.search(p) or _TEST_CLASS.search(p):
+        return True
+    return bool(_SPEC_PATH.search(p)) and not _DESCRIPTION.search(p)
 
 
 def placeholder(name: str | None) -> bool:

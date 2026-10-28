@@ -97,6 +97,10 @@ class Item:
     #: not an epic spread over a dozen branches. On a real week the useful
     #: key-only links were each the one counterpart in another repository.
     sole: bool = False
+    #: Some other item's diff was compared with this change's. When this
+    #: one's was not (past the read cap, or unreadable), an epic key is still
+    #: all it has: it must not outrank the items that were compared.
+    compared: bool = False
     check: str = ""
 
 
@@ -145,10 +149,13 @@ def strength(it: Item) -> int:
             # change; a commit that merely carries an epic key does not.
             return 3 if (it.shares or it.sole) else _promoted(it)
         if it.link in ("diff_ticket", "ticket"):
-            if it.shares is not None and not it.shares and not it.named_both and not it.sole:
-                # Read, and the two diffs name nothing in common, and nobody
-                # named both branches for the key: it is all they share.
-                # Weak, unless a model says it touches.
+            unknown = it.shares is None and not it.compared
+            if not (it.shares or it.named_both or it.sole or unknown):
+                # The two diffs name nothing in common (or this one was not
+                # read while others were), nobody named both branches for the
+                # key, and other changes carry it too: an epic. Weak, unless a
+                # model says it touches. With no diffs compared at all (a forge
+                # without them) the key keeps its old weight.
                 return _promoted(it)
             return 4 if it.link == "diff_ticket" else 3
         return _promoted(it)
@@ -267,7 +274,15 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
     for c in b.get("contract_breaks", []):
         out.append(Item(key=f"break:{c['surface']}:{c['name']}", kind="break",
                         label=f"{c['surface']} `{c['name']}`", names=[c["name"]], directed=True))
-    per_key = Counter(t for i in b.get("impacts", []) for t in set(i.get("shared_tickets") or []))
+    def keys_of(i: dict) -> list[str]:
+        # Keys this change and that one share. An item linked by author, a
+        # signal or a contract carries its own tickets in the same field;
+        # those link nothing and must not count.
+        how = i.get("how") or ""
+        return list(i.get("shared_tickets") or []) if (not how or "which this diff names" in how) else []
+
+    per_key = Counter(t for i in b.get("impacts", []) for t in set(keys_of(i)))
+    compared = any(i.get("shares") is not None for i in b.get("impacts", []))
     for i in b.get("impacts", []):
         how, rel = i.get("how") or "", i.get("relation") or ""
         by_repo = i.get("by_repository")
@@ -294,9 +309,9 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
                         names=_names_in(rel) if link == "relation" else [],
                         touches=touches.get(key), shares=i.get("shares"),
                         named_both=any(_names_key(own_ref, t) and _names_key(i["ref"], t)
-                                       for t in i.get("shared_tickets") or []),
-                        sole=bool(i.get("shared_tickets"))
-                        and all(per_key[t] == 1 for t in i["shared_tickets"])))
+                                       for t in keys_of(i)),
+                        compared=compared,
+                        sole=bool(keys_of(i)) and all(per_key[t] == 1 for t in keys_of(i))))
     for d in b.get("decisions", []):
         key = decision_key(d)
         named = _names_in(d.get("gate_basis") or "") + _names_in(d.get("why") or "")

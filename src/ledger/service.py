@@ -856,12 +856,17 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         pending = list(local.pending)
     else:
         pending = (vcs.working_changes(repo) if worktree else None) or []
+    #: Whether this change's own diff is known: read, or known to be empty.
+    #: Without it, "the two diffs share no name" would be a claim about a diff
+    #: nobody read, so other changes' `shares` stay unknown.
+    mine_read = subj.own_commits == 0 and not pending
     if (vcs.supports_diffs or local is not None) and (subj.own_commits > 0 or pending):
         try:
             if local is not None:
                 files = list(local.files)
             else:
                 files = vcs.changed_files(repo, subj.base, ref) if subj.own_commits > 0 else []
+            mine_read = True
         except ForgeUnavailable:
             files = []
         # Uncommitted work last, so a file changed both ways keeps both hunks.
@@ -1039,27 +1044,41 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                     evidence=gone.evidence, path=gone.path,
                 ))
 
-    b = build_brief(result, decisions, changed_paths=changed,
-                    same_repo_integration=here,
-                    contracts=touched, contract_owners=owners, field_breaks=breaks,
-                    contract_breaks=gone_contracts, contract_parties=parties,
-                    contract_docs=index.documented_in(touched),
-                    contract_fields={c: v for c, v in index.fields_of(touched, exclude=repo).items()
-                                     if owners.get(c)},
-                    integration_branches=tuple(cfg.integration_branches),
-                    resolved=True, base=subj.base,
-                    own_commits=None if missing_ref else subj.own_commits,
-                    integrated_in=subj.integrated_in,
-                    uncommitted=[f.path for f in pending])
-    _link_without_a_ticket_key(b, index, repo, ref, diff_tickets, result, subject_signals,
-                               touched=touched)
     yours: dict = {}
     for e in edges:
         yours.setdefault(e.contract, set()).add(e.edge)
     for c, es in bound_edges.items():   # reached through a bound constant
         yours.setdefault(c, set()).update(es)
-    describe_impacts(b.impacts, cfg, vcs, subj.repos, index, yours=yours,
-                     your_files=files, contracts=b.contracts)
+
+    def assemble(found, skip: set):
+        bb = build_brief(found, decisions, changed_paths=changed,
+                         same_repo_integration=here,
+                         contracts=touched, contract_owners=owners, field_breaks=breaks,
+                         contract_breaks=gone_contracts, contract_parties=parties,
+                         contract_docs=index.documented_in(touched),
+                         contract_fields={c: v for c, v in index.fields_of(touched, exclude=repo).items()
+                                          if owners.get(c)},
+                         integration_branches=tuple(cfg.integration_branches),
+                         resolved=True, base=subj.base,
+                         own_commits=None if missing_ref else subj.own_commits,
+                         integrated_in=subj.integrated_in,
+                         uncommitted=[f.path for f in pending])
+        _link_without_a_ticket_key(bb, index, repo, ref, diff_tickets, found, subject_signals,
+                                   touched=touched, skip=skip)
+        idle = describe_impacts(bb.impacts, cfg, vcs, subj.repos, index, yours=yours,
+                                your_files=shipped if mine_read else None,
+                                contracts=bb.contracts)
+        return bb, idle
+
+    b, idle = assemble(result, set())
+    if idle:
+        # Branches with nothing of their own beyond their base. Built again
+        # without them, so the verdict and its counts are about what is listed.
+        # Their diffs are cached by commit; the second pass reads nothing new.
+        import dataclasses
+        trimmed = dataclasses.replace(result, siblings=[
+            s for s in result.siblings if (s.change.repo, s.change.ref) not in idle])
+        b, _ = assemble(trimmed, idle)
     _escalate_opposite_moves(b)
     # A topic name removed from code may only be a default: if deployment config
     # binds the same identifier to another name, the running topic may not
@@ -1199,6 +1218,7 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
 
     from ledger.core.effect import Delta, opposite_moves, shared_names
     mine = delta_of("", your_files) if your_files else Delta()
+    known_mine = your_files is not None
     your_keys = mine.keys_added | mine.keys_removed
     chosen = sorted(impacts, key=lambda i: bool(i.where))[:DESCRIBED]
     #: Branches whose diff over their own base is empty: everything they
@@ -1221,7 +1241,7 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
         if delta.files == 0 and i.kind in ("branch", "pr"):
             idle.append(i)
             continue
-        i.shares = shared_names(mine.names, delta.names)[:6]
+        i.shares = shared_names(mine.names, delta.names)[:6] if known_mine else None
         i.effect = effect_line(delta)
         # What the index knows of the other repository's part in a contract
         # this change touches, for when the two diffs share no name.
@@ -1239,6 +1259,7 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
         i.ask = ask_line(i.ref, i.author, shared, fields)
     if idle:
         impacts[:] = [i for i in impacts if all(i is not x for x in idle)]
+    return {(i.repo, i.ref) for i in idle}
 
 
 #: A verdict this may overturn. `review_with` and anything stronger already
@@ -1250,7 +1271,7 @@ _QUIET = ("proceed", "insufficient_data")
 def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
                                diff_tickets: list[str], result,
                                subject_signals: set | None = None, *,
-                               touched=()) -> None:
+                               touched=(), skip=frozenset()) -> None:
     """Work in another repository that the branch name could not point at.
 
     The failure this exists for, in the reviewer's words: "brief returned
@@ -1266,7 +1287,7 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
     in the code. Proximity by author is a question, not a finding, so it says
     so and never carries a verdict of its own.
     """
-    known = {(i.repo, i.ref) for i in b.impacts}
+    known = {(i.repo, i.ref) for i in b.impacts} | set(skip)
     found: list[tuple[str, str]] = []
 
     for sib in index.siblings_by_tickets(diff_tickets, exclude_repo=repo):

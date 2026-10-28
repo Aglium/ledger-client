@@ -32,6 +32,24 @@ def adr(**kw):
 
 
 class TestLinkDecisions:
+    def test_a_document_both_name_is_weak(self):
+        links = link_decisions(SUBJ, [adr(related=["docs/scenarios.md"], path="docs/adr/0001-x.md")],
+                               changed_paths=["docs/scenarios.md"])
+        assert links[0].strength == "weak" and "a document this change edits" in links[0].why
+
+    def test_a_central_record_links_by_naming_this_repository(self):
+        d = adr(repo="architecture", related=["orchestrator/app/api/assign.py"])
+        links = link_decisions(SUBJ, [d], changed_paths=["app/api/assign.py"])
+        assert links[0].strength == "strong" and links[0].basis == "path"
+        other = adr(repo="architecture", related=["billing/app/api/assign.py"])
+        assert not [l for l in link_decisions(SUBJ, [other], changed_paths=["app/api/assign.py"])
+                    if l.basis == "path"]
+
+    def test_a_record_over_a_table_nobody_else_uses_is_context(self):
+        b = build_brief(find_siblings(SUBJ, [SUBJ]), [adr(title="`order_line` rule")],
+                        contracts=[ContractRef(Surface.TABLE, "order_line")])
+        assert (b.recommendation, b.confidence) == ("review_with", "low")
+
     def test_ticket_match_is_strong(self):
         links = link_decisions(SUBJ, [adr(ticket="ABC-321")])
         assert links[0].strength == "strong" and "governs ticket" in links[0].why
@@ -571,6 +589,17 @@ class TestSettle:
         assert (b.recommendation, b.confidence) == ("proceed", "medium")
         assert b.reasons[0].startswith("nothing linked to this change is strong enough")
         assert "3 item(s)" in b.reasons[0]
+
+    def test_a_decision_that_governs_it_is_not_overruled(self):
+        """Weak items beside it are no reason to drop what a decision says."""
+        from ledger.core.brief import settle
+        b = self.brief()
+        b.quiet = ("review_with", "medium", ["a binding decision governs this work: X"])
+        b = settle(b)
+        assert (b.recommendation, b.confidence) == ("review_with", "medium")
+        assert b.reasons[-1] == "a binding decision governs this work: X"
+        b = settle(b)                       # again, after a re-rank
+        assert b.reasons.count("a binding decision governs this work: X") == 1
 
     def test_confidence_follows_the_strongest_lead(self):
         from ledger.core.brief import settle

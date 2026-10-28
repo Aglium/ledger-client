@@ -137,7 +137,20 @@ _COMMON_NAMES = frozenset({
     "isactive", "isdeleted", "statuscode", "errorcode", "errormessage", "pagesize",
     "nextcursor", "contenttype", "setup", "teardown", "beforeeach", "aftereach",
     "classname", "onclick", "usestate", "useeffect", "tostring", "getlogger",
+    # Framework and standard-library names: two diffs in the same stack share
+    # them whatever they do.
+    "usecallback", "usememo", "useref", "usecontext", "usereducer", "maxlength",
+    "ondelete", "foreignkey", "charfield", "primarykey", "nodemodules", "datetime",
+    "valueerror", "keyerror", "typeerror", "runtimeerror", "attributeerror", "indexerror",
+    "notimplementederror", "assertionerror", "runtimeexception", "logicexception",
+    "invalidargumentexception", "illegalargumentexception", "illegalstateexception",
+    "nullpointerexception", "ioexception", "jsonresponse", "httpexception", "basemodel",
+    "isinstance", "getattr", "setattr", "hasattr", "staticmethod", "classmethod",
+    "dataclass", "tojson", "fromjson", "jsonserialize", "getmessage", "getcode",
 })
+#: Lock files and copied-in code: their names belong to someone else.
+_LOCKFILE = re.compile(r"(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock"
+                       r"|composer\.lock|Cargo\.lock|Gemfile\.lock|go\.sum|Pipfile\.lock)$")
 
 
 def name_key(name: str) -> str:
@@ -147,13 +160,16 @@ def name_key(name: str) -> str:
 
 def names_in(path: str, body: str) -> set[str]:
     """The identifiers a file's changed lines name, normalised. Not its tests or prose."""
-    from ledger.core.estate import is_test_path
-    if is_test_path(path) or _PROSE.search(path or ""):
+    from ledger.core.estate import is_test_path, vendored
+    if is_test_path(path) or _PROSE.search(path or "") or _LOCKFILE.search(path or "") \
+            or vendored(path):
         return set()
     out = set()
     for t in _IDENT.findall(body or ""):
         if t.startswith("__") or not ("_" in t.strip("_") or any(c.isupper() for c in t[1:])):
             continue
+        if t.isupper() and "_" not in t:
+            continue                # CREATE, TABLE, SELECT: keywords and acronyms
         k = name_key(t)
         if len(k) >= 5 and k not in _COMMON_NAMES:
             out.add(k)

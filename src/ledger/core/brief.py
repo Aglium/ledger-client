@@ -244,6 +244,11 @@ class ImpactBrief:
     #: The verdict and confidence the links alone gave, before `settle`
     #: weighed them against the ranking. Never serialised.
     linked: tuple[str, str] | None = None
+    #: The verdict this brief would carry with no in-flight items and no
+    #: shared contracts: what `settle` falls back to when none of them is
+    #: strong enough to lead. A decision that governs the change is not
+    #: overruled because the items beside it were weak. Never serialised.
+    quiet: tuple[str, str, list] | None = None
 
     def to_dict(self) -> dict:
         """Stable shape. A gate plugin depends on this, so it is explicit rather
@@ -337,6 +342,18 @@ def _norm_rel(rel: str) -> str:
 #: More decisions of one repository than this naming one file make it a shared
 #: page rather than the subject of any of them.
 SHARED_FILE = 3
+
+
+_PROSE_PATH = re.compile(r"\.(md|markdown|rst|txt|adoc)$|(^|/)(docs?|CHANGELOG)[/.]", re.I)
+
+
+def _own_paths(d, repo: str) -> list[str]:
+    """The record's related paths that are in `repo`: all of them when it is
+    that repository's record, else only those spelled `repo/...`."""
+    if d.repo == repo:
+        return list(d.related or [])
+    pre = repo + "/"
+    return [n[len(pre):] for n in map(_norm_rel, d.related or []) if n.startswith(pre)]
 
 
 def _related_hit(related: list[str], changed_paths: list[str]) -> str | None:
@@ -538,13 +555,19 @@ def link_decisions(
         if (hit := _names_contract(f"{d.title}\n{d.body}", contracts)) is not None:
             strength, why = LinkStrength.STRONG, f"names `{hit.name}`, a {hit.surface.value} this change touches"
             basis = "contract"
-        elif d.repo == change.repo and (rel := _related_hit(d.related, changed_paths)) is not None:
-            # Same repository only: a path is relative to its repository, and
-            # another service's `app/api/deps.py` is a different file.
+        elif (rel := _related_hit(_own_paths(d, change.repo), changed_paths)) is not None:
+            # A path is relative to its repository: another service's
+            # `app/api/deps.py` is a different file. A record elsewhere (a
+            # central ADR repository) links only by naming this repository.
             if named_by.get((d.repo, rel), 0) > SHARED_FILE:
                 strength = LinkStrength.WEAK
                 why = (f"names {rel}, which this change touches and "
                        f"{named_by[(d.repo, rel)]} records of this repository name")
+            elif _PROSE_PATH.search(rel):
+                # A record naming a document the change edits: the two talk
+                # about the same thing, which says nothing about what it rules.
+                strength = LinkStrength.WEAK
+                why = f"names {rel}, a document this change edits"
             else:
                 strength, why = LinkStrength.STRONG, f"names {rel}, which this change touches"
             basis = "path"
@@ -704,6 +727,11 @@ def build_brief(
     #: Strong AND about what this change does. A ticket-only link is strong
     #: evidence of a relationship and no evidence of relevance.
     strong_about = [l for l in strong if l.basis in ABOUT_THIS_CHANGE]
+    #: Of those, the ones that rule on what this change does to someone: a
+    #: path in it, or a contract another repository produces or consumes.
+    #: A record naming a table only this repository uses is context, as the
+    #: ranking already treats it; on a real week it was noise every time.
+    governing = [l for l in strong_about if l.basis == "path" or over_directed(l)]
     # A decision still unmerged, excluding one on the subject's own branch: a
     # change carrying its own ADR is not blocked on it. It must also be about
     # what this change does -- see ABOUT_THIS_CHANGE.
@@ -712,6 +740,24 @@ def build_brief(
                 and l.basis in ABOUT_THIS_CHANGE and over_directed(l)]
     #: Linked, named in the brief, but never a reason to stop.
     context_only = [l for l in strong if l.basis not in ABOUT_THIS_CHANGE]
+    #: Strong and about this change, but over a contract no other repository
+    #: produces or consumes: worth reading, not a reason to stop.
+    nearby = [l for l in strong_about if l not in governing]
+
+    governs = (f"a binding decision governs this work: {governing[0].title[:90]}"
+               if governing else None)
+    filed_with = None
+    if nearby:
+        l = nearby[0]
+        filed_with = (f"a decision {l.why.split(';')[0]}; no other repository produces or "
+                      f"consumes it, so it is context: {l.title[:90]}")
+    elif context_only:
+        l = context_only[0]
+        filed_with = (f"filed under the same ticket as a decision, which may or may not be about "
+                      f"this change: {l.title[:90]}" + (f" (unmerged, on `{l.ref}`)" if l.ref else ""))
+    brief.quiet = ((Recommendation.REVIEW_WITH.value, "medium", [governs]) if governs
+                   else (Recommendation.REVIEW_WITH.value, "low", [filed_with]) if filed_with
+                   else (Recommendation.PROCEED.value, "medium", []))
 
     if not resolved:
         # First of all. Nothing is known about this change, so nothing can be
@@ -795,18 +841,14 @@ def build_brief(
                 + " to an integration branch but not released, so "
                 + ("they" if integrated > 1 else "it") + " will land before or alongside this"
             )
-    elif strong_about:
+    elif governing:
         brief.recommendation = Recommendation.REVIEW_WITH.value
         brief.confidence = "medium"
-        brief.reasons.append(f"a binding decision governs this work: {strong_about[0].title[:90]}")
-    elif context_only:
+        brief.reasons.append(governs)
+    elif filed_with:
         brief.recommendation = Recommendation.REVIEW_WITH.value
         brief.confidence = "low"
-        l = context_only[0]
-        brief.reasons.append(
-            f"filed under the same ticket as a decision, which may or may not be about this "
-            f"change: {l.title[:90]}" + (f" (unmerged, on `{l.ref}`)" if l.ref else "")
-        )
+        brief.reasons.append(filed_with)
     else:
         brief.reasons.append("no cross-repo work shares this ticket and no binding decision names it")
 
@@ -929,8 +971,10 @@ def settle(b: ImpactBrief) -> ImpactBrief:
     if b.linked is None:
         b.linked = (b.recommendation, b.confidence)
     rec, conf = b.linked
+    quiet_rec, quiet_conf, quiet_why = b.quiet or (Recommendation.PROCEED.value, "medium", [])
     note_prefix = NOTHING_LEADS.split("{n}")[0]
-    b.reasons = [r for r in b.reasons if not r.startswith(note_prefix)]
+    if any(r.startswith(note_prefix) for r in b.reasons):      # settled before: undo it
+        b.reasons = [r for r in b.reasons if not r.startswith(note_prefix) and r not in quiet_why]
     b.recommendation, b.confidence = rec, conf
     if rec != Recommendation.REVIEW_WITH.value:
         return b
@@ -946,8 +990,11 @@ def settle(b: ImpactBrief) -> ImpactBrief:
         return b
     if ranked.get("repeated"):
         return b                     # shown before on this branch, still standing
+    # What the brief says without the weak items: proceed, or the decision
+    # that governs it, which the items beside it never outranked.
     n = int((ranked.get("also") or {}).get("count") or 0)
-    b.recommendation, b.confidence = Recommendation.PROCEED.value, "medium"
+    b.recommendation, b.confidence = quiet_rec, quiet_conf
     b.reasons.insert(0, NOTHING_LEADS.format(n=n))
+    b.reasons.extend(r for r in quiet_why if r not in b.reasons)
     return b
 

@@ -109,6 +109,19 @@ class TestAKeyIsNotEnough:
         """Two people named their branches for it: a claim, not an accident."""
         assert strength(imp("ticket", shares=[], named_both=True)) == 3
 
+    def test_an_unread_diff_does_not_outrank_the_read_ones(self):
+        """Past the read cap, an epic key is still all it has."""
+        assert strength(imp("ticket", compared=True)) == 0
+        assert strength(imp("ticket", compared=True, sole=True)) == 3
+
+    def test_keys_an_author_link_carries_are_not_shared(self):
+        b = {"impacts": [
+            {"repo": "a", "ref": "x", "kind": "branch", "shared_tickets": ["T-1"], "shares": []},
+            {"repo": "b", "ref": "y", "kind": "branch", "shared_tickets": ["T-1"], "shares": [],
+             "how": "same author, pushed around the same time; no ticket links them"},
+        ]}
+        assert items_of(b)[0].sole
+
     def test_an_unread_diff_keeps_the_old_rule(self):
         """No diffs to compare (a forge without them) is not evidence of nothing."""
         assert strength(imp("ticket")) == 3
