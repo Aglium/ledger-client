@@ -34,7 +34,8 @@ from ledger.core.breaks import removed_contracts, removed_fields
 from ledger.core.brief import (
     ContractBreak, FieldBreak, Impact, ImpactBrief, Recommendation, _names_contract, build_brief,
 )
-from ledger.core.contracts import ContractRef, Edge, Surface, discover, discover_in_text, http_equivalent
+from ledger.core.contracts import (ContractRef, Edge, Surface, declares_contract, discover, discover_in_text,
+                                   http_equivalent)
 from ledger.core.credentials import api_host, from_git
 from ledger.core.join import Change, find_siblings
 from ledger.core.tickets import extract_tickets
@@ -932,7 +933,16 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         # holds work that will land alongside it.
         here = {c: [r for r in refs if r not in (subj.base, subj.integrated_in)]
                 for c, refs in index.integration_here(repo, touched).items()}
-        here = {c: refs for c, refs in here.items() if refs}
+        # A dotted literal this diff only names, and whose name does not say
+        # it is a topic, is a config key or a label: the same rule the index
+        # applies to a repository's own edges. Without it, four translation
+        # keys an integration branch also edits led a brief.
+        directed_here = {e.contract for e in edges if e.edge in (Edge.PUBLISHES, Edge.CONSUMES)}
+        directed_here |= {c for c, es in bound_edges.items()
+                          if es & {Edge.PUBLISHES, Edge.CONSUMES}}
+        here = {c: refs for c, refs in here.items()
+                if refs and (c.surface != Surface.TOPIC or c in directed_here
+                             or declares_contract(c.name))}
         # Topics: who really produces and consumes, not who merely names them.
         #
         # Plus the next repository along the pipe. A deployment that names

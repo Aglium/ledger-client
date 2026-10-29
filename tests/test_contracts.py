@@ -1,5 +1,5 @@
 from ledger.core.contracts import (
-    ContractRef, Edge, Surface, discover, discover_in_text, resolve_direction,
+    ContractRef, Edge, Surface, declares_contract, discover, discover_in_text, resolve_direction,
 )
 
 
@@ -96,6 +96,31 @@ class TestNoise:
         text = "BASE = 'api.example.com'\nCB = 'invoices.example.eu'\nK8S = 'orders.default.svc'\n"
         e = discover_in_text("r", "app/settings.py", text)
         assert refs(e, Surface.TOPIC) == set()
+
+    def test_a_key_handed_to_a_translation_call_is_not_a_topic(self):
+        """Found on a real estate: four keys of one admin screen came back as
+        topics also touched on an integration branch, and led a brief."""
+        text = ("$this->helper->addSuccess('admin.claim.chat_message.sent');\n"
+                "->addDanger('admin.claim.chat_message.window_closed')\n"
+                "{{ 'admin.claim.quick_chat_message.none_available'|trans }}\n"
+                "'label' => 'admin.claim.quick_chat_message.template',\n"
+                "$this->translator->trans('invoice.status.paid', [], 'messages');\n"
+                "{t('menu.items.home')}\n")
+        assert refs(discover_in_text("r", "src/Controller.php", text), Surface.TOPIC) == set()
+
+    def test_a_topic_beside_a_translation_call_survives(self):
+        text = "$this->addFlash('ok', 'x');\n$producer->send('claim.created', $payload);\n"
+        assert refs(discover_in_text("r", "src/Bus.php", text), Surface.TOPIC) == {"claim.created"}
+
+    def test_a_name_declares_a_contract_by_its_parts_not_a_substring(self):
+        assert declares_contract("claim.events.v1") and declares_contract("orders_topic")
+        assert declares_contract("lead.created.event") and declares_contract("whatsapp.messages")
+        assert not declares_contract("admin.claim.chat_message.sent")
+        assert not declares_contract("invoice.created")
+
+    def test_a_bare_mention_of_a_screen_with_message_in_its_name_is_not_a_topic(self):
+        d = discover("r", ["app/x.py"], lambda p: "x = 'admin.claim.chat_message.sent'\n")
+        assert refs(d.edges, Surface.TOPIC) == set()
 
     def test_a_topic_that_merely_contains_a_tld_word_survives(self):
         e = discover_in_text("r", "app/bus.py", "publish('com.orders.created', payload)")

@@ -56,12 +56,38 @@ class ContractEdge:
 #: Bump whenever a change here alters what discover() returns. The stored index
 #: keys on it: rows written by an older extractor are treated as stale and read
 #: live until the next sync rescans them, so an upgrade never serves old answers.
-EXTRACTOR_VERSION = "6"
+EXTRACTOR_VERSION = "7"
 
 # A dotted, lowercase literal is how most brokers name a topic.
 _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]")
 #: Extensions and dotted module paths that look like topics but are not.
 _NOT_TOPIC = re.compile(r"\.(py|json|ya?ml|md|txt|sql|html?|jsx?|tsx?|csv|ini|cfg|toml|lock|env|log)$", re.I)
+#: A dotted literal handed to a translation or flash-message call is a
+#: translation key, not a topic: `addSuccess('admin.claim.chat_message.sent')`,
+#: `{{ 'x.y.z'|trans }}`, `t('x.y')`, a form field's `'label' => 'x.y'`. Found on
+#: a real estate: four keys of one admin screen were reported as topics also
+#: touched on an integration branch, and led a brief.
+_TRANSLATED_BEFORE = re.compile(
+    r"(?:\b(?:trans|transChoice|translate|gettext|ngettext|__|_t|t|\$t|i18n\.t|formatMessage|"
+    r"addFlash|addSuccess|addDanger|addError|addWarning|addInfo|addNotice|flash|"
+    r"Lang::get|@lang|lang)\s*\(\s*(?:['\"]\w+['\"]\s*,\s*)?"
+    r"|['\"](?:label|placeholder|help|title|choice_label|empty_value|invalid_message)['\"]\s*=>\s*)$")
+_TRANSLATED_AFTER = re.compile(r"^\s*\|\s*trans\b")
+#: A name declares itself a messaging contract when one of its dotted parts
+#: says so: `claim.events.v1`, `orders_topic`, `lead.created.event`. Matched on
+#: the parts, not anywhere in the string: `chat_message` is a screen, not a
+#: message bus.
+_DECLARES = re.compile(
+    r"^(?:events?|topics?|queues?|exchanges?|routing|messages?|commands?|intents?)$"
+    r"|_(?:events?|topics?|queues?|exchanges?|commands?|intents?)$"
+    r"|^(?:events?|topics?|queues?|exchanges?|commands?|intents?)_", re.I)
+
+
+def declares_contract(name: str) -> bool:
+    """Does the name itself say it is a topic, queue or event?"""
+    return bool(_VERSIONED.search(name)) or any(_DECLARES.search(part) for part in name.split("."))
+
+
 #: A dotted literal ending in a top-level domain is a hostname (`api.example.com`),
 #: not a topic. Found on a real estate: two service hostnames were reported as
 #: contracts shared between repos, and escalated a brief to review_with.
@@ -183,6 +209,8 @@ def discover_in_text(repo: str, path: str, text: str) -> list[ContractEdge]:
         for m in _TOPIC.finditer(line):
             name = m.group(1)
             if _NOT_TOPIC.search(name) or _HOSTNAME.search(name) or name.count(".") > 5:
+                continue
+            if _TRANSLATED_BEFORE.search(line[:m.start()]) or _TRANSLATED_AFTER.search(line[m.end():]):
                 continue
             out.append(ContractEdge(repo, ContractRef(Surface.TOPIC, name),
                                     _direction(line, window), path, line.strip()[:200]))
@@ -422,9 +450,8 @@ def _drop_noise(edges: list[ContractEdge], modules: set[str]) -> list[ContractEd
         if ".".join(name.split(".")[:2]) in i18n and not _VERSIONED.search(name):
             continue
         # A bare mention is only a contract when the name itself declares one.
-        if e.edge is Edge.MENTIONS and not _VERSIONED.search(name):
-            if not re.search(r"(event|topic|queue|exchange|routing|message|command|intent)", name, re.I):
-                continue
+        if e.edge is Edge.MENTIONS and not declares_contract(name):
+            continue
         kept.append(e)
     return kept
 
