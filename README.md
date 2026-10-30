@@ -193,7 +193,7 @@ with no ticket key is briefed like any other. It is advisory and never fails a b
 `mode: siblings` for the old ticket-only comment.
 
 ```yaml
-- uses: Aglium/ledger-client@v0.4.1
+- uses: Aglium/ledger-client@v0.4.2
   continue-on-error: true
   with:
     github-token: ${{ secrets.LEDGER_TOKEN }}
