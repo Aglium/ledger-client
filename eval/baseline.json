@@ -1,0 +1,524 @@
+{
+ "cases": {
+  "015973833950": [
+   "proceed",
+   "medium",
+   0
+  ],
+  "016407dd0403": [
+   "proceed",
+   "high",
+   0
+  ],
+  "02ee5ad48cd1": [
+   "proceed",
+   "high",
+   0
+  ],
+  "054f399e283f": [
+   "review_with",
+   "low",
+   0
+  ],
+  "0a29dcc3db86": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "0bfd387bd2df": [
+   "proceed",
+   "high",
+   0
+  ],
+  "0d22bff41009": [
+   "proceed",
+   "high",
+   0
+  ],
+  "132c5b25db79": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "1510b5b42d9b": [
+   "proceed",
+   "high",
+   0
+  ],
+  "15ff1b094f01": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "16eff1999df1": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "1829067992bf": [
+   "proceed",
+   "high",
+   0
+  ],
+  "1a746b119287": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "204b26515337": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "259d213f0bce": [
+   "proceed",
+   "high",
+   0
+  ],
+  "267230e0e7cd": [
+   "proceed",
+   "high",
+   0
+  ],
+  "28968f19a025": [
+   "proceed",
+   "high",
+   0
+  ],
+  "28ea492d88ae": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "292805d489aa": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "296b5c9558ef": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "2b3b29199efa": [
+   "proceed",
+   "high",
+   0
+  ],
+  "31ed8a2a42e5": [
+   "proceed",
+   "medium",
+   0
+  ],
+  "3388ddbb5fb4": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "33d80e2b8d53": [
+   "proceed",
+   "high",
+   0
+  ],
+  "35431133e065": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "3d0e5c261dc2": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "3fd8f631beb7": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "45c64ea40912": [
+   "proceed",
+   "high",
+   0
+  ],
+  "46ccf8ada993": [
+   "proceed",
+   "high",
+   0
+  ],
+  "472d9993a97a": [
+   "proceed",
+   "high",
+   0
+  ],
+  "479ac9b42889": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "4b8a498a9802": [
+   "proceed",
+   "high",
+   0
+  ],
+  "4f22673d03bd": [
+   "proceed",
+   "high",
+   0
+  ],
+  "4feb0df9e8a5": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "53024802ea4a": [
+   "proceed",
+   "medium",
+   0
+  ],
+  "532353330162": [
+   "proceed",
+   "medium",
+   0
+  ],
+  "5334b63b87fe": [
+   "proceed",
+   "high",
+   0
+  ],
+  "605d752113e3": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "611fc9b48f81": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "651ad4115484": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "65fdabe53c8e": [
+   "review_with",
+   "low",
+   3
+  ],
+  "6bae4bc0d18e": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "6bb7fc7b8bce": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "74b9b334c891": [
+   "review_with",
+   "low",
+   0
+  ],
+  "75a134866ccd": [
+   "proceed",
+   "high",
+   0
+  ],
+  "766a032800fb": [
+   "proceed",
+   "high",
+   0
+  ],
+  "774c89506afe": [
+   "proceed",
+   "high",
+   1
+  ],
+  "791ac08b79ad": [
+   "proceed",
+   "high",
+   0
+  ],
+  "808c9e0bb7bc": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "811194f1f172": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "84bb2679a2e3": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "855ff9b03f41": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "85b70bb2a563": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "8601f374201e": [
+   "proceed",
+   "high",
+   0
+  ],
+  "8684e8dfbdda": [
+   "proceed",
+   "high",
+   0
+  ],
+  "9121666e5a2f": [
+   "proceed",
+   "high",
+   0
+  ],
+  "92bacb27631a": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "961b3421d80b": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "968b400a9f3e": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "98cf4dbb1c2a": [
+   "proceed",
+   "high",
+   0
+  ],
+  "994d81cf4372": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "9c66f05388bd": [
+   "proceed",
+   "high",
+   0
+  ],
+  "9e077b5c75bb": [
+   "proceed",
+   "high",
+   0
+  ],
+  "a205885d9c23": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "a210da049339": [
+   "proceed",
+   "high",
+   0
+  ],
+  "a406aa17f8e8": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "a82457a75546": [
+   "proceed",
+   "medium",
+   0
+  ],
+  "ae057db61a7c": [
+   "proceed",
+   "medium",
+   0
+  ],
+  "ae07d428c812": [
+   "proceed",
+   "high",
+   0
+  ],
+  "ae496b3efc57": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "b1682aab322a": [
+   "proceed",
+   "high",
+   0
+  ],
+  "b69d322ca6ea": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "bfd29a92be63": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "c02b85b64db9": [
+   "proceed",
+   "high",
+   0
+  ],
+  "c056a1ab3f6c": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "c2e5f47cb3f6": [
+   "proceed",
+   "high",
+   0
+  ],
+  "c32875ad6c31": [
+   "proceed",
+   "high",
+   0
+  ],
+  "c3ae74e22d00": [
+   "proceed",
+   "high",
+   0
+  ],
+  "c5f3c2034a8c": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "c76b7e6fdfdd": [
+   "proceed",
+   "high",
+   1
+  ],
+  "c7e3982b41b1": [
+   "proceed",
+   "high",
+   1
+  ],
+  "c962b47ad76a": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "cb239d2cd624": [
+   "review_with",
+   "medium",
+   3
+  ],
+  "cd18e6fa6c26": [
+   "proceed",
+   "high",
+   0
+  ],
+  "cdbdcca8cc88": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "cdc23905e876": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "cf746e787826": [
+   "proceed",
+   "medium",
+   0
+  ],
+  "d00f2399150d": [
+   "proceed",
+   "high",
+   0
+  ],
+  "d1a511ec5d04": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "d7b0da5e8d36": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "d834b6c0558a": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "dc07854593ed": [
+   "proceed",
+   "high",
+   0
+  ],
+  "e54de3872764": [
+   "proceed",
+   "high",
+   0
+  ],
+  "e59dde1d99e0": [
+   "review_with",
+   "low",
+   0
+  ],
+  "e91721616f2b": [
+   "proceed",
+   "high",
+   0
+  ],
+  "e92804a73c85": [
+   "proceed",
+   "high",
+   0
+  ],
+  "ec2c90d1c174": [
+   "proceed",
+   "high",
+   0
+  ],
+  "f022db273292": [
+   "proceed",
+   "high",
+   1
+  ],
+  "f4e93d8adb24": [
+   "review_with",
+   "medium",
+   2
+  ],
+  "f63b6f654e80": [
+   "review_with",
+   "medium",
+   1
+  ],
+  "fc3f4afeef15": [
+   "proceed",
+   "high",
+   0
+  ],
+  "fc4586739d53": [
+   "review_with",
+   "medium",
+   1
+  ]
+ },
+ "metrics": {
+  "noise": 58,
+  "noise_flagged": 29,
+  "noise_high": 0,
+  "noise_lead": 56,
+  "useful": 40,
+  "useful_flagged": 21,
+  "useful_lead": 43
+ },
+ "promote": 3
+}

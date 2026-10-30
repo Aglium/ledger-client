@@ -1113,6 +1113,78 @@ def bench(
             typer.echo(f"{v}: mean {statistics.mean(xs):.2f} of 8 over {len(xs)} answers")
 
 
+@app.command("eval")
+def eval_cmd(
+    cases: str = typer.Option(..., envvar="LEDGER_EVAL_CASES", help="Anonymized judged briefs (JSON lines)"),
+    baseline: str = typer.Option("eval/baseline.json", help="Counts and verdicts to hold this code to"),
+    promote: int = typer.Option(None, help="Model score that lets a weak item lead; default: the baseline's"),
+    update: bool = typer.Option(False, "--update", help="Record this run as the new baseline"),
+):
+    """Did this change make findings better or worse? Exits 1 when worse.
+
+    Re-ranks judged briefs with this checkout's code and holds the counts to
+    the baseline. The cases are an organisation's and live outside this
+    repository; the baseline holds only counts and opaque ids, so it is kept
+    here and changes in the same commit as the code it measures.
+    """
+    import json as _json
+    from pathlib import Path
+
+    from ledger import evaluate
+
+    rows = evaluate.read_cases(Path(cases).expanduser())
+    base_path = Path(baseline)
+    was = _json.loads(base_path.read_text()) if base_path.exists() else None
+    if promote is None:
+        promote = (was or {}).get("promote", 3)
+    now = evaluate.run(rows, promote=promote)
+    if update or was is None:
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path.write_text(_json.dumps({"promote": promote, **now.to_dict()}, indent=1, sort_keys=True) + "\n")
+        typer.echo(f"baseline written: {base_path}")
+        for k, v in now.metrics.items():
+            typer.echo(f"  {k:15} {v}")
+        raise typer.Exit(0)
+    ok, lines = evaluate.compare(now, was, {r["id"]: r["label"] for r in rows})
+    typer.echo(f"{len(rows)} judged brief(s), promote at {promote}:")
+    for line in lines:
+        typer.echo(line)
+    raise typer.Exit(0 if ok else 1)
+
+
+@app.command("eval-export")
+def eval_export(
+    source: str = typer.Argument(..., help="JSON lines: label, brief, linked, quiet, touches"),
+    out: str = typer.Argument(..., help="Where to write anonymized cases"),
+    deny: str = typer.Option("", help="Comma-separated words that must never survive (org, ticket keys)"),
+):
+    """Anonymize judged briefs into eval cases. Needs LEDGER_EVAL_SALT, a secret
+    kept out of every repository. Refuses to write while an original name remains."""
+    import json as _json
+    import os
+
+    from ledger import anonymize
+
+    salt = os.environ.get("LEDGER_EVAL_SALT", "")
+    if not salt:
+        typer.secho("set LEDGER_EVAL_SALT to a secret: it keeps pseudonyms from being guessed",
+                    fg="red", err=True)
+        raise typer.Exit(2)
+    p = anonymize.Pseudonyms(salt, deny={d.strip() for d in deny.split(",") if d.strip()})
+    with open(source, encoding="utf-8") as f:
+        rows = [_json.loads(line) for line in f if line.strip()]
+    text = "".join(_json.dumps(anonymize.case(r, p, touches=r.get("touches")), sort_keys=True) + "\n"
+                   for r in rows)
+    left = anonymize.leaks(text, p)
+    if left:
+        typer.secho(f"{len(left)} original name(s) would remain, nothing written: {', '.join(left[:10])}",
+                    fg="red", err=True)
+        raise typer.Exit(1)
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(text)
+    typer.echo(f"{len(rows)} case(s) written to {out}")
+
+
 @app.command("session-stop")
 def session_stop(
     config: str = typer.Option(None, envvar="LEDGER_CONFIG", help="Path to ledger.yml"),
