@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refuse a push (and a tag) the CI would refuse. Enable once per clone:
+#   git config core.hooksPath .githooks
+# Skip in an emergency with --no-verify.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+if command -v uv >/dev/null 2>&1; then run="uv run --quiet --extra mcp --with pytest --with pytest-asyncio --with respx"; else run=""; fi
+$run python -m pytest -q -x tests
+$run aglium-ledger eval

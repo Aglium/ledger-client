@@ -22,6 +22,12 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match pyproject version $version" >&2
             exit 1
           fi
+      - name: The whole test suite
+        # A tag on a red commit must not build: 0.4.1 was tagged on a commit
+        # whose runner had lost its executable bit, and only ci.yml noticed.
+        run: |
+          pip install '.[mcp]' pytest pytest-asyncio respx
+          pytest -q tests
       - name: Findings no worse than the baseline
         # The same check runs on every push (ci.yml, job eval); here it is required.
         run: |
