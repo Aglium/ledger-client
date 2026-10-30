@@ -54,7 +54,14 @@ class TestAnonymize:
         p = pseudonyms()
         how = p.prose("shares ABC-12, which this diff names and the branch name does not")
         assert how.startswith("shares ") and "which this diff names" in how and "ABC" not in how
-        assert p.name("docs/adr/0004-x.md").startswith("docs/adr/0004-")
+        path = p.name("docs/adr/0004-x.md")
+        assert path.startswith("docs/adr/") and path.endswith(".md") and "0004" not in path
+
+    def test_a_ticket_number_is_hidden_and_still_matches_the_branch(self):
+        from ledger.core.rank import _names_key
+        p = pseudonyms()
+        ticket, branch = p.name("ABC-919"), p.name("feat/abc-919-refunds")
+        assert "919" not in ticket and _names_key(branch, ticket)
 
     def test_the_same_name_is_the_same_pseudonym(self):
         p = pseudonyms()
@@ -81,16 +88,10 @@ class TestCompare:
         assert evaluate.compare(evaluate.run([c]), base, {})[0]
 
     def test_the_cases_hold_to_the_committed_baseline(self):
-        """Runs where the organisation's cases are at hand (CI with the token,
-        or LEDGER_EVAL_CASES set locally); skipped elsewhere."""
-        import os
         from pathlib import Path
-
-        import pytest
-        cases = os.environ.get("LEDGER_EVAL_CASES")
-        if not cases or not Path(cases).exists():
-            pytest.skip("LEDGER_EVAL_CASES not set")
-        base = json.loads((Path(__file__).resolve().parents[1] / "eval" / "baseline.json").read_text())
+        here = Path(__file__).resolve().parents[1] / "eval"
+        cases = here / "cases.jsonl"
+        base = json.loads((here / "baseline.json").read_text())
         rows = evaluate.read_cases(cases)
         ok, lines = evaluate.compare(evaluate.run(rows, promote=base["promote"]), base,
                                      {r["id"]: r["label"] for r in rows})

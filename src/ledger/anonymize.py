@@ -6,7 +6,7 @@ gave, the label a person or session gave it, and the model's 0-3 per item.
 Everything a reader could learn the company from is gone or replaced:
 
   * every name -- repository, branch, topic, table, route, path, field, sha,
-    author, ticket key -- becomes a keyed pseudonym of the same length, the
+    author, ticket key and number, date -- becomes a keyed pseudonym of the same length, the
     same one everywhere it occurs, so "both diffs name `x`" still holds;
   * the sentences Ledger itself wrote keep the words of its own templates,
     which the ranking matches on ("which this diff names", "same author");
@@ -67,6 +67,7 @@ class Pseudonyms:
         self.words = (words if words is not None else template_words()) - {d.lower() for d in deny}
         self.deny = {d.lower() for d in deny}
         self.seen: set[str] = set()         # original tokens replaced, for the leak check
+        self.made: set[str] = set()         # pseudonyms written; one may equal another original
 
     def _code(self, low: str) -> str:
         digest = hmac.new(self.key, low.encode(), hashlib.sha256).digest()
@@ -79,10 +80,17 @@ class Pseudonyms:
         low = tok.lower()
         if low in keep and low not in self.deny:
             return tok
-        if tok.isdigit() and len(tok) <= 6:
-            return tok                       # ticket numbers, ADR numbers, counts
+        if tok.isdigit():
+            # Ticket numbers, dates, ADR numbers: digits of the same length, so
+            # `SK-919` in a branch name still matches `SK-919` in a ticket.
+            self.seen.add(low)
+            digest = hmac.new(self.key, b"#" + low.encode(), hashlib.sha256).digest()
+            out = "".join(str(b % 10) for b in digest)[:len(tok)].rjust(len(tok), "0")
+            self.made.add(out)
+            return out
         self.seen.add(low)
         code = self._code(low)
+        self.made.add(code)
         if tok.isupper():
             return code.upper()
         if tok[:1].isupper():
@@ -185,5 +193,6 @@ def leaks(text: str, p: Pseudonyms) -> list[str]:
     """Original names still present in `text`, as whole tokens."""
     present = {t.lower() for t in _TOKEN.findall(text)}
     keep = p.words | STRUCTURAL
-    return sorted(t for t in p.seen & present if t not in keep and len(t) > 2
-                  and not (t.isdigit() and len(t) <= 6))
+    # A token both replaced and written as some other name's pseudonym is a
+    # collision, not a leak: it says nothing about the name it came from.
+    return sorted(t for t in (p.seen & present) - p.made if t not in keep and len(t) > 2)

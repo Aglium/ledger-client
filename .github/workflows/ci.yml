@@ -14,29 +14,16 @@ jobs:
           pytest -q tests
   eval:
     # Findings, better or worse than eval/baseline.json, on judged briefs from
-    # real sessions. The cases are anonymized but still an organisation's, so
-    # they live in a private repository; without its token (a fork) this job
-    # says so and passes. A change that makes findings worse fails here; an
-    # intended trade updates the baseline in the same commit:
-    #   aglium-ledger eval --cases <cases.jsonl> --update
+    # real agent sessions (eval/cases.jsonl, anonymized). A change that makes
+    # findings worse fails here; an intended trade updates the baseline in the
+    # same commit: aglium-ledger eval --update
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Fetch the cases
-        id: cases
-        env:
-          TOKEN: ${{ secrets.EVAL_CASES_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then echo "no EVAL_CASES_TOKEN: eval skipped"; exit 0; fi
-          git clone -q --depth 1 "https://x-access-token:${TOKEN}@github.com/${{ vars.EVAL_CASES_REPO || 'Aglium/ledger-eval-cases' }}.git" ../eval-cases
-          echo "ok=1" >> "$GITHUB_OUTPUT"
-      - name: Better or worse
-        if: steps.cases.outputs.ok == '1'
-        run: |
-          pip install .
-          aglium-ledger eval --cases ../eval-cases/cases.jsonl --baseline eval/baseline.json
+      - run: pip install .
+      - run: aglium-ledger eval
   clean-install:
     # What a new user's machine does: no client installed, the plugin's runner
     # fetches it with uvx (from this checkout instead of the tagged release).

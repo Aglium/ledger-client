@@ -23,15 +23,10 @@ jobs:
             exit 1
           fi
       - name: Findings no worse than the baseline
-        # A release is the last place to find a regression, not the first: the
-        # same check runs on every push (ci.yml, job eval). Here it is required.
-        env:
-          TOKEN: ${{ secrets.EVAL_CASES_TOKEN }}
+        # The same check runs on every push (ci.yml, job eval); here it is required.
         run: |
-          if [ -z "$TOKEN" ]; then echo "EVAL_CASES_TOKEN is required to release" >&2; exit 1; fi
-          git clone -q --depth 1 "https://x-access-token:${TOKEN}@github.com/${{ vars.EVAL_CASES_REPO || 'Aglium/ledger-eval-cases' }}.git" ../eval-cases
           pip install .
-          aglium-ledger eval --cases ../eval-cases/cases.jsonl --baseline eval/baseline.json
+          aglium-ledger eval
       - run: pip install build
       # Only the client is released here. The server ships as an image, privately.
       - run: python -m build --outdir dist

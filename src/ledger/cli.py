@@ -1115,7 +1115,8 @@ def bench(
 
 @app.command("eval")
 def eval_cmd(
-    cases: str = typer.Option(..., envvar="LEDGER_EVAL_CASES", help="Anonymized judged briefs (JSON lines)"),
+    cases: str = typer.Option("eval/cases.jsonl", envvar="LEDGER_EVAL_CASES",
+                              help="Anonymized judged briefs (JSON lines)"),
     baseline: str = typer.Option("eval/baseline.json", help="Counts and verdicts to hold this code to"),
     promote: int = typer.Option(None, help="Model score that lets a weak item lead; default: the baseline's"),
     update: bool = typer.Option(False, "--update", help="Record this run as the new baseline"),
@@ -1123,9 +1124,8 @@ def eval_cmd(
     """Did this change make findings better or worse? Exits 1 when worse.
 
     Re-ranks judged briefs with this checkout's code and holds the counts to
-    the baseline. The cases are an organisation's and live outside this
-    repository; the baseline holds only counts and opaque ids, so it is kept
-    here and changes in the same commit as the code it measures.
+    the baseline. Run from the repository root; the baseline changes in the
+    same commit as the code it measures.
     """
     import json as _json
     from pathlib import Path
