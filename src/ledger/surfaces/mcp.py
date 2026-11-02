@@ -182,7 +182,7 @@ class LiveBackend:
                         "`aglium-ledger feedback summary` shows the totals."}
 
 
-NOT_SET_UP = ("Ledger is not set up on this machine yet. Run /ledger:setup in Claude Code, or "
+NOT_SET_UP = ("Ledger is not set up on this machine yet. Run /repo-ledger:setup in Claude Code, or "
               "`aglium-ledger init` inside one of your organisation's repositories, then ask again.")
 
 

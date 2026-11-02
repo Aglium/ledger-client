@@ -1,6 +1,6 @@
 # Replay: would Ledger have warned you?
 
-`aglium-ledger replay` (or `/ledger:replay` in Claude Code) takes pull requests that already
+`aglium-ledger replay` (or `/repo-ledger:replay` in Claude Code) takes pull requests that already
 merged in your repositories and briefs each one as it was on the day its work started. The
 question it answers: *would Ledger have told the author something they did not know, about
 another repository?*

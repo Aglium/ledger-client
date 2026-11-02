@@ -3,7 +3,7 @@ description: Replay your recently merged changes - would Ledger have told you so
 argument-hint: "[--days N] [--everyone]"
 ---
 
-# /ledger:replay
+# /repo-ledger:replay
 
 Find out whether Ledger would have said anything useful about work that already merged.
 

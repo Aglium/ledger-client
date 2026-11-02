@@ -3,7 +3,7 @@ description: What the current branch affects in other repositories, and what to 
 argument-hint: "[repo ref]"
 ---
 
-# /ledger:brief
+# /repo-ledger:brief
 
 Report what this change affects beyond this repository.
 

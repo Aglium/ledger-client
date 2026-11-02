@@ -9,7 +9,7 @@
   },
   "plugins": [
     {
-      "name": "ledger",
+      "name": "repo-ledger",
       "source": "./plugin",
       "description": "Before you push: what this change affects in the repositories you are not looking at, and whether someone needs to decide something first."
     }

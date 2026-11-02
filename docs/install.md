@@ -17,13 +17,13 @@ It runs on macOS and Linux. On Windows, use WSL.
 
 ```text
 /plugin marketplace add Aglium/ledger-client
-/plugin install ledger@aglium
+/plugin install repo-ledger@aglium
 ```
 
-Start a new session in one of your organisation's repositories and run `/ledger:setup`. It
+Start a new session in one of your organisation's repositories and run `/repo-ledger:setup`. It
 checks the prerequisites, shows the config it would write and asks before writing it, offers
 to mirror the organisation's repositories, and ends by saying which repositories Ledger can
-see. Then `/ledger:replay`.
+see. Then `/repo-ledger:replay`.
 
 The first command can take a minute: `uvx` is fetching the client release this plugin pins.
 

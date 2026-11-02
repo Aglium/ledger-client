@@ -3,7 +3,7 @@ description: Which repositories Ledger can see from here, and what it cannot
 argument-hint: "[--forge] [--days N]"
 ---
 
-# /ledger:coverage
+# /repo-ledger:coverage
 
 1. Run `"${CLAUDE_PLUGIN_ROOT}/scripts/ledger-run.sh" coverage $ARGUMENTS`.
 2. Tell the user how many repositories Ledger read, and list the GAPS block in its own words.

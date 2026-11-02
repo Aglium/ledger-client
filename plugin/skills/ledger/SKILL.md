@@ -63,7 +63,7 @@ git rev-parse --abbrev-ref HEAD                   # ref
 
 - **proceed** — nothing found in what Ledger could see. Carry on, but if `index.live_repos`
   holds only this repository or `unreadable_repos` is not empty, say that the answer covers
-  little, and suggest `/ledger:coverage`.
+  little, and suggest `/repo-ledger:coverage`.
   When the first reason says nothing linked is strong enough to check first, the items
   listed share only a ticket key, a file or a word with this change. Mention them in one
   line at most; do not investigate them unless the user asks.

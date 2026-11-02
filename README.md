@@ -105,9 +105,9 @@ In Claude Code:
 
 ```text
 /plugin marketplace add Aglium/ledger-client
-/plugin install ledger@aglium
-/ledger:setup       # writes a config, checks prerequisites, says which repositories Ledger can see
-/ledger:replay      # your merged changes from the last 90 days; --everyone for your team's
+/plugin install repo-ledger@aglium
+/repo-ledger:setup       # writes a config, checks prerequisites, says which repositories Ledger can see
+/repo-ledger:replay      # your merged changes from the last 90 days; --everyone for your team's
 ```
 
 From a terminal (Python 3.12+ and [uv](https://docs.astral.sh/uv/)):
@@ -176,7 +176,7 @@ answers stay on your machine. More in [docs/replay.md](docs/replay.md).
 ## Use it from a coding agent
 
 - **Claude Code:** the plugin in [`plugin/`](plugin/README.md) adds the skill, the MCP server,
-  a push-time hook and `/ledger:setup`, `/ledger:coverage`, `/ledger:brief`, `/ledger:replay`.
+  a push-time hook and `/repo-ledger:setup`, `/repo-ledger:coverage`, `/repo-ledger:brief`, `/repo-ledger:replay`.
 - **Any MCP client:** run `aglium-ledger mcp` as a stdio server. Tools: `brief`, `who_owns`,
   `inflight_for`, `decisions_for`, `feedback`.
 
@@ -193,7 +193,7 @@ with no ticket key is briefed like any other. It is advisory and never fails a b
 `mode: siblings` for the old ticket-only comment.
 
 ```yaml
-- uses: Aglium/ledger-client@v0.4.2
+- uses: Aglium/ledger-client@v0.4.3
   continue-on-error: true
   with:
     github-token: ${{ secrets.LEDGER_TOKEN }}

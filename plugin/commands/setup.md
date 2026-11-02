@@ -2,7 +2,7 @@
 description: Set Ledger up for this repository's organisation, check what it can see, and get to a first replay
 ---
 
-# /ledger:setup
+# /repo-ledger:setup
 
 Set Ledger up on this machine, starting from the repository this session is in, and end with
 the user knowing exactly what Ledger can see.
@@ -33,7 +33,7 @@ the user knowing exactly what Ledger can see.
    (repositories in the organisation that are not on this machine, stale mirrors, repositories
    without pull requests), and its last line. `--forge` lists the organisation on its forge;
    if that fails for lack of a credential, run it without `--forge` and say what that leaves out.
-7. If the last line says `ready to replay`, offer `/ledger:replay`: it checks the user's own
+7. If the last line says `ready to replay`, offer `/repo-ledger:replay`: it checks the user's own
    recently merged changes and is the quickest way to see whether Ledger is useful here.
    Otherwise say what to fix first, from the gaps.
 

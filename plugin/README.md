@@ -16,10 +16,10 @@ involve. It returns names, contracts, decisions and paths as evidence, never fil
 | `ledger` skill | Tells Claude when to ask Ledger: before reviewing, planning or pushing a branch, when a ticket key comes up, before changing a shared topic, endpoint or table |
 | `ledger` MCP server | Local tools: `brief`, `who_owns`, `inflight_for`, `decisions_for`, `feedback` (kept on your machine) |
 | Push hook | On a `git push`, `gh pr create`, `glab mr create` or new branch, adds a brief to the session. Silent when there is nothing to say; never blocks the command, even if Ledger fails |
-| `/ledger:setup` | Checks prerequisites, writes a config for this repository's organisation, optionally mirrors its repositories, and says which ones Ledger can see |
-| `/ledger:coverage` | Which repositories Ledger can see from here, and the gaps |
-| `/ledger:brief` | What the current branch affects in other repositories |
-| `/ledger:replay` | Replays your recent merged changes as they were, with no hindsight: would Ledger have told you something you did not know? Then asks for your verdict on each finding |
+| `/repo-ledger:setup` | Checks prerequisites, writes a config for this repository's organisation, optionally mirrors its repositories, and says which ones Ledger can see |
+| `/repo-ledger:coverage` | Which repositories Ledger can see from here, and the gaps |
+| `/repo-ledger:brief` | What the current branch affects in other repositories |
+| `/repo-ledger:replay` | Replays your recent merged changes as they were, with no hindsight: would Ledger have told you something you did not know? Then asks for your verdict on each finding |
 
 The recommendation is one of `proceed`, `review_with` (name these repositories and people in
 your review), `decision_needed` (a person must decide first) or `insufficient_data` (unknown,
@@ -43,21 +43,30 @@ uv tool install 'aglium-ledger[mcp]'
 In Claude Code 2.1.275 or later:
 
 ```text
-/plugin install ledger --marketplace Aglium/ledger-client
+/plugin install repo-ledger --marketplace Aglium/ledger-client
 ```
 
 Or add the marketplace first with `/plugin marketplace add Aglium/ledger-client`, then run
-`/plugin install ledger@aglium`.
+`/plugin install repo-ledger@aglium`.
+
+Installed it before 0.4.3, when it was called `ledger`? Remove the old one and install the new
+name; your config, mirrors and feedback stay where they are:
+
+```text
+/plugin uninstall ledger@aglium
+/plugin marketplace update aglium
+/plugin install repo-ledger@aglium
+```
 
 ## Set up
 
 1. Install the plugin, then open Claude Code in one of your organisation's repositories.
-2. Run `/ledger:setup`. It shows the config it would write (organisation, forge, ticket keys)
+2. Run `/repo-ledger:setup`. It shows the config it would write (organisation, forge, ticket keys)
    and asks before writing it.
 3. Optionally let it mirror the organisation's repositories, so briefs can see repositories
    you have not cloned. This can take a while and some disk.
-4. Run `/ledger:replay` to see what Ledger would have said about your recently merged changes,
-   and `/ledger:brief` on your current branch.
+4. Run `/repo-ledger:replay` to see what Ledger would have said about your recently merged changes,
+   and `/repo-ledger:brief` on your current branch.
 
 ## What it runs, reads and sends
 

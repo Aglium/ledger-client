@@ -123,7 +123,7 @@ class TestBeforeSetup:
     def test_each_tool_says_how_to_set_up(self):
         srv = build_server(SetupBackend(self.missing, lambda cfg: None))
         got = TestMcp().call(srv, "brief", {"repo": "orders", "ref": "main"})
-        assert got["error"] == NOT_SET_UP and "/ledger:setup" in got["error"]
+        assert got["error"] == NOT_SET_UP and "/repo-ledger:setup" in got["error"]
 
     def test_the_config_is_picked_up_once_setup_has_written_it(self, tmp_path):
         p = tmp_path / "ledger.yml"
