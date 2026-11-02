@@ -205,7 +205,7 @@ with no ticket key is briefed like any other. It is advisory and never fails a b
 The client runs on your machine. It reads your repositories with the credential git already
 has, sends nothing to Aglium, makes no model calls, and puts no file contents in its answers:
 they carry names, contracts, decisions and paths. Exactly what it reads, contacts and stores
-is in [docs/trust.md](docs/trust.md).
+is in [docs/trust.md](docs/trust.md); the privacy policy is [PRIVACY.md](PRIVACY.md).
 
 ## For you, or for your whole team
 

@@ -74,6 +74,10 @@ Ledger runs on your machine. Everything below is listed so you can check it.
 | Asks your organisation's Ledger server | Only when `LEDGER_URL` is set | That server, with `LEDGER_API_TOKEN`. It receives the repository, branch and question, and returns derived facts |
 
 The client sends nothing to Aglium, makes no model calls, and sends no source code anywhere.
+The one exception is opt-in and for evaluation only: `aglium-ledger bench --judge` asks your own
+Claude Code CLI (`claude -p`) to score past briefs, with personal data stripped first.
+
+Privacy policy: [PRIVACY.md](https://github.com/Aglium/ledger-client/blob/main/PRIVACY.md).
 
 ## Licensing
 
