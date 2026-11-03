@@ -26,7 +26,16 @@ class Collection:
     repo_sources: dict = field(default_factory=dict)
     repos_seen: int = 0
     partial: bool = False
+    #: What could not be read, as narrowly as it is known: a source whose
+    #: repositories could not even be listed is named whole (`localgit`), a
+    #: single repository that failed is named as `source:repo`. One broken
+    #: mirror must not read as "the whole of local git is missing".
     missing_sources: tuple[str, ...] = ()
+    #: Sources that could not list their repositories: nothing from them was read.
+    unreachable_sources: tuple[str, ...] = ()
+    #: Repositories reached but read only in part. Their open work cannot be
+    #: concluded closed; every other repository's can.
+    degraded_repos: tuple[str, ...] = ()
     errors: list[str] = field(default_factory=list)
     #: Branches and pull requests left out by `branches.watch`/`branches.ignore`.
     branches_ignored: int = 0
@@ -102,13 +111,14 @@ def collect(
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(days=liveness_days)
     out = Collection()
-    missing: list[str] = []
+    unreachable: list[str] = []
+    degraded: list[tuple[str, str]] = []
 
     for adapter in adapters:
         try:
             repos = adapter.list_repos()
         except ForgeUnavailable as e:
-            missing.append(adapter.source)
+            unreachable.append(adapter.source)
             out.errors.append(str(e))
             continue
 
@@ -120,6 +130,12 @@ def collect(
             out.repo_sources[repo.full_name] = adapter.source
             repo_degraded = False
 
+            def failed(e: ForgeUnavailable) -> None:
+                # The adapter's message may not say which repository it was
+                # reading ("git for-each-ref failed: object file ... is empty").
+                msg = str(e)
+                out.errors.append(msg if repo.full_name in msg else f"{repo.full_name}: {msg}")
+
             def kept(ref: str) -> bool:
                 return keep is not None and keep == (repo.full_name, ref)
 
@@ -130,7 +146,7 @@ def collect(
                 live = adapter.list_branches(repo.full_name, since=since)
             except ForgeUnavailable as e:
                 repo_degraded = True
-                out.errors.append(str(e))
+                failed(e)
             integ_here = expand_integration(integration_branches, [b.name for b in live])
             ignored_heads: set[str] = set()
 
@@ -161,7 +177,7 @@ def collect(
                     )
             except ForgeUnavailable as e:
                 repo_degraded = True
-                out.errors.append(str(e))
+                failed(e)
 
             try:
                 pr_refs = {c.ref for c in out.changes if c.repo == repo.full_name}
@@ -224,7 +240,7 @@ def collect(
                     )
             except ForgeUnavailable as e:
                 repo_degraded = True
-                out.errors.append(str(e))
+                failed(e)
 
             # Integrated-but-unreleased work. A topic branch merged to `stage`
             # has vanished from the open-branch list and is absent from `main`,
@@ -259,11 +275,13 @@ def collect(
                         )
                     )
 
-            if repo_degraded and adapter.source not in missing:
-                missing.append(adapter.source)
+            if repo_degraded:
+                degraded.append((adapter.source, repo.full_name))
 
-    out.missing_sources = tuple(missing)
-    out.partial = bool(missing)
+    out.unreachable_sources = tuple(unreachable)
+    out.degraded_repos = tuple(name for _src, name in degraded)
+    out.missing_sources = tuple(unreachable) + tuple(f"{src}:{name}" for src, name in degraded)
+    out.partial = bool(out.missing_sources)
     return out
 
 

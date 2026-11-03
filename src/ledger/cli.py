@@ -925,13 +925,15 @@ def _hook_context(cfg: Config, surface: str):
     contract and every open change in the estate. With no LEDGER_URL the hook
     raises, and its caller fails open -- nothing is printed.
     """
-    def go(text: str, *, repo: str | None = None) -> dict:
+    def go(text: str, *, repo: str | None = None, ref: str | None = None) -> dict:
         from ledger import remote
         url = os.environ.get("LEDGER_URL")
         if not url:
             raise LedgerError("context needs the organisation server: set LEDGER_URL")
         return remote.post(url, os.environ.get("LEDGER_API_TOKEN"), "/context",
-                           {"text": text, "repo": repo, "via": surface},
+                           # The branch lets the server leave the caller's own
+                           # change out of "who else is working on this".
+                           {"text": text, "repo": repo, "ref": ref, "via": surface},
                            headers=remote.headers_for(cfg))
     return go
 

@@ -75,6 +75,29 @@ class TestCollect:
     def test_all_forges_down_is_partial_and_empty(self):
         got = collect([FakeAdapter(unavailable=True)], KEYS, now=NOW)
         assert got.changes == [] and got.partial
+        assert got.unreachable_sources == ("fake",) and got.degraded_repos == ()
+
+    def test_one_broken_repository_is_named_not_the_whole_source(self):
+        """A mirror with empty object files fails `for-each-ref`. The sync is
+        partial, but what is missing is that repository, not all of local git."""
+        broken = "example-org/broken-mirror"
+
+        class OneBroken(FakeAdapter):
+            def list_branches(self, repo, *, since=None):
+                if repo == broken:
+                    raise ForgeUnavailable(self.source, "git for-each-ref failed: object file is empty")
+                return super().list_branches(repo, since=since)
+
+        a = adapter()
+        b = OneBroken(repos=a.list_repos() + [RepoRef(full_name=broken, default_branch="main",
+                                                       host="github.com")],
+                      branches={R: a.list_branches(R)}, pulls={R: a.list_open_pulls(R)})
+        got = collect([b], KEYS, now=NOW)
+        assert got.partial
+        assert got.missing_sources == (f"fake:{broken}",)
+        assert got.degraded_repos == (broken,) and got.unreachable_sources == ()
+        assert any(e.startswith(broken) for e in got.errors), "the error names the repository"
+        assert "feat/abc-321-export" in {c.ref for c in got.changes}
 
 
 class TestTheTicketTheBranchNameDoesNotCarry:

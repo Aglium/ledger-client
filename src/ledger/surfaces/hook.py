@@ -517,7 +517,8 @@ def handle_user_prompt(payload: dict, context_for: Callable[..., dict],
         if len(prompt.strip()) < 12 or machine_generated(prompt):
             return None
         where = repo_and_ref(payload.get("cwd") or os.getcwd())
-        text = context_text(context_for(prompt, repo=where[0] if where else None),
+        text = context_text(context_for(prompt, repo=where[0] if where else None,
+                                        ref=where[1] if where else None),
                             lead="Ledger, on what the rest of the estate already has for this:")
         if text is None:
             return None
@@ -556,7 +557,8 @@ def handle(payload: dict, brief_for: Callable[[str, str], dict],
         if payload.get("tool_name") == "ExitPlanMode" and context_for is not None:
             plan = (payload.get("tool_input") or {}).get("plan") or ""
             here = repo_and_ref(payload.get("cwd") or os.getcwd())
-            text = context_text(context_for(plan, repo=here[0] if here else None),
+            text = context_text(context_for(plan, repo=here[0] if here else None,
+                                            ref=here[1] if here else None),
                                 lead="Ledger, on what this plan touches:")
             if text is None:
                 return None

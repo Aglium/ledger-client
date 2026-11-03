@@ -284,6 +284,14 @@ class TestTheTaskIsStated:
         assert "`order_line`" in text and "4 commit(s) behind" in text
         assert "OPEN GATE" in text
 
+    def test_it_names_the_branch_it_is_on(self, clone, tmp_path):
+        """So the server can leave the caller's own change out of the answer."""
+        repo, _ = clone
+        asked = {}
+        h.handle_user_prompt({"cwd": str(repo), "prompt": "Fix ABC-7 in order_line"},
+                             lambda _t, **k: (asked.update(k), CONTEXT)[1], root=str(tmp_path))
+        assert asked["repo"] and asked["ref"] == h.repo_and_ref(str(repo))[1]
+
     def test_nothing_known_says_nothing(self, clone, tmp_path):
         repo, _ = clone
         assert h.handle_user_prompt({"cwd": str(repo), "prompt": "Fix the thing"},
