@@ -265,6 +265,10 @@ def _lead_lines(b: dict, r: dict) -> tuple[list[str], set[str]]:
     for lead in r.get("lead", []):
         kind, src = by_key.get(lead["key"], (None, None))
         check = f"\n    {lead['check']}" if lead.get("check") else ""
+        if lead.get("fetch"):
+            # Where to read it here (see `ledger.where`): without it, agents
+            # stopped at "that repository is not checked out".
+            check += f"\n    get it: {lead['fetch']}"
         if kind == "impact":
             i = src
             where = (f" (in {i['where']}" + (f", {i['sha']}" if i.get("sha") else "") + ")"

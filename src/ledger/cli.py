@@ -4,6 +4,7 @@ read of the estate, or from the organisation server when LEDGER_URL is set."""
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import typer
 
@@ -576,7 +577,7 @@ def brief(
     if url and not live and not local_root:
         from ledger.surfaces.hook import summarise
         try:
-            got = _remote_brief(cfg, url, "cli", 60.0, worktree, False)(repo, ref, base)
+            got = _located(cfg, _remote_brief(cfg, url, "cli", 60.0, worktree, False))(repo, ref, base)
         except LedgerError as e:
             _fail(e)
         if as_json:
@@ -872,8 +873,18 @@ def mcp_server(
     # Without a config the server still starts: the plugin launches it on install,
     # before setup, and each tool then says how to set Ledger up.
     backend = _backend(config, local_root, via="mcp")
+
+    def locate(b: dict) -> dict:
+        # Read per call: the plugin starts this server before setup writes a config.
+        from ledger import where
+        try:
+            cfg = Config.load(config)
+        except Exception:                               # noqa: BLE001 -- no config, no paths
+            return b
+        roots = [Path(local_root).expanduser()] if local_root else where.roots_of(cfg)
+        return where.annotate(b, roots)
     try:
-        srv = build_server(backend)
+        srv = build_server(backend, locate=locate)
     except LedgerError as e:
         _fail(e)
     srv.run(transport)
@@ -954,13 +965,24 @@ def _hook_brief(cfg: Config, surface: str, timeout: float, worktree: bool = True
     read live in-process otherwise."""
     url = os.environ.get("LEDGER_URL")
     if url:
-        return _remote_brief(cfg, url, surface, timeout, worktree, allow_missing_ref)
+        return _located(cfg, _remote_brief(cfg, url, surface, timeout, worktree, allow_missing_ref))
 
     def brief_for(repo: str, ref: str, base: str | None = None) -> dict:
         return service.run_brief(cfg, service.build_adapters(cfg, None), repo, ref,
                                  worktree=worktree, allow_missing_ref=allow_missing_ref,
                                  base=base).to_dict()
-    return brief_for
+    return _located(cfg, brief_for)
+
+
+def _located(cfg: Config | None, brief_for):
+    """The same brief, each leading item saying where to read it on this
+    machine (`ledger.where`)."""
+    from ledger import where
+    roots = where.roots_of(cfg)
+
+    def go(*a, **k) -> dict:
+        return where.annotate(brief_for(*a, **k), roots)
+    return go
 
 
 @app.command("user-prompt")

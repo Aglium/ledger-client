@@ -233,7 +233,7 @@ def _call(fn: Callable[[], Any]) -> Any:
         return {"error": str(e)}
 
 
-def build_server(backend: Backend):
+def build_server(backend: Backend, locate: Callable[[dict], dict] | None = None):
     try:
         from mcp.server.mcpserver import MCPServer
     except ImportError as e:        # pragma: no cover -- exercised by the CLI message
@@ -259,7 +259,9 @@ def build_server(backend: Backend):
         give it whenever you know it -- guessed, it is wrong for a branch already
         merged into `stage`. `worktree`: include uncommitted edits in the
         checkout here."""
-        return _call(lambda: backend.brief(repo, ref, base, worktree))
+        got = _call(lambda: backend.brief(repo, ref, base, worktree))
+        # Each leading item gains `fetch`: a command that shows it on this machine.
+        return locate(got) if locate and isinstance(got, dict) and "error" not in got else got
 
     @srv.tool()
     def inflight_for(ticket: str) -> dict:
