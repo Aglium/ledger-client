@@ -64,6 +64,95 @@ version versions index order position amount currency phone email address
 #: real history these produced hit after hit -- "Returns the task_id, or None".
 _COMMENT = re.compile(r'^\s*(#|//|/\*|\*|--|"""|\'\'\'|<!--|>)')
 
+#: Where a docstring or a block comment opens and what closes it. `_COMMENT`
+#: sees only a block's first line; the lines after it start with ordinary
+#: words. Real: a docstring line naming ``kind`` in RST quotes, from the middle
+#: of a model's docstring, was read as the column being dropped.
+_BLOCK = re.compile(r'"""|\'\'\'|/\*')
+_CLOSES = {'"""': '"""', "'''": "'''", "/*": "*/"}
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+#: An open block: its delimiter, and whether it is documentation. A triple
+#: quote that opens a line is a docstring; one after `=` or `(` is a string
+#: the code uses -- `op.execute("""DROP TABLE x""")` -- and stays code.
+Open = tuple[str, bool] | None
+
+
+def _open_after(line: str, opened: Open) -> Open:
+    """The block still open at the end of `line`, given the one open before it."""
+    i = 0
+    while True:
+        if opened is None:
+            m = _BLOCK.search(line, i)
+            if m is None:
+                return None
+            before = line[:m.start()].strip()
+            if m.group(0) == "/*" and before:
+                # Only a line that starts with it: `"/static/*"` is a glob in
+                # a string, and taken for a comment it would hide the code
+                # after it.
+                i = m.end()
+                continue
+            opened, i = (m.group(0), not before.strip("rRuU")), m.end()
+        else:
+            close = _CLOSES[opened[0]]
+            j = line.find(close, i)
+            if j < 0:
+                return opened
+            i, opened = j + len(close), None
+
+
+def prose_mask(lines: list[str], opened: Open = None) -> list[bool]:
+    """For each line: is it documentation rather than code?
+
+    A comment line, or any line that begins inside a docstring or a block
+    comment -- the middle and the closing lines that `_COMMENT` cannot see.
+    """
+    out = []
+    for line in lines:
+        out.append(bool(opened and opened[1]) or bool(_COMMENT.match(line)))
+        opened = _open_after(line, opened)
+    return out
+
+
+def _open_at(text: str, lineno: int) -> Open:
+    """The block open at the start of 1-based line `lineno` of `text`."""
+    opened: Open = None
+    for line in text.splitlines()[:max(lineno - 1, 0)]:
+        opened = _open_after(line, opened)
+    return opened
+
+
+def code_removed(body: str, after: str | None = None) -> list[str]:
+    """Deleted lines that are code, read in their place in the old file.
+
+    Each hunk is replayed on its old side -- context and deleted lines in
+    order -- so a deleted line in the middle of a docstring is known to be
+    there. A hunk can begin inside a docstring; `after`, the file after the
+    change, says whether it does at the hunk's first line.
+    """
+    out: list[str] = []
+    old: list[tuple[str, bool]] = []          # (line, deleted?)
+
+    def flush(opened):
+        for (line, gone), prose in zip(old, prose_mask([l for l, _ in old], opened)):
+            if gone and not prose:
+                out.append(line)
+        old.clear()
+
+    opened = None
+    for raw in body.splitlines():
+        h = _HUNK.match(raw)
+        if h:
+            flush(opened)
+            opened = _open_at(after, int(h.group(1))) if after else None
+        elif raw.startswith("-") and not raw.startswith("---"):
+            old.append((raw[1:], True))
+        elif raw.startswith(" "):
+            old.append((raw[1:], False))
+    flush(opened)
+    return out
+
 
 def _leaf(field_path: str) -> str:
     """`documents[].recipientId` -> `recipientId`; the spelling code uses."""
@@ -92,7 +181,9 @@ def _structural(leaf: str, line: str, *, generic: bool = False) -> bool:
     history that shape was a steady source of false breaks.
     """
     e = re.escape(leaf)
-    shapes = [rf"""["'`]{e}["'`]""", rf"\.{e}\b"]      # a quoted key, an attribute
+    # A quoted key, an attribute. A backtick quotes a key in SQL and JS; two
+    # of them are RST markup in a docstring -- ``kind`` -- and say nothing.
+    shapes = [rf"""["']{e}["']""", rf"(?<!`)`{e}`(?!`)", rf"\.{e}\b"]
     if not generic:
         # A bare `code = ...` is a local variable far more often than a field;
         # measured, that shape was the last false break left on real history.
@@ -148,10 +239,19 @@ def removed_fields(
     """
     out: list[RemovedField] = []
     seen: set[tuple[str, str]] = set()
+    # A field moved to another file of the same change is not removed. Real:
+    # `list_claims` left `app/cases/utils/claim_resolve.py` for
+    # `app/repositories/gateway.py` and was reported as dropped, because the
+    # check looked for it only among the lines added to the file it left.
+    # Prose and tests are not where code moves to.
+    moved_to = "\n".join(
+        l[1:] for p, b in diffs.items() if not _PROSE.search(p) and not _TEST_PATH.search(p)
+        for l in b.splitlines()
+        if l.startswith("+") and not l.startswith("+++") and not _COMMENT.match(l[1:]))
     for path, body in diffs.items():
         if _PROSE.search(path):
             continue
-        removed = [l[1:] for l in body.splitlines() if l.startswith("-")]
+        removed = code_removed(body, (file_text or {}).get(path))
         added = "\n".join(l[1:] for l in body.splitlines() if l.startswith("+"))
         if not removed:
             continue
@@ -165,11 +265,10 @@ def removed_fields(
                 # Word boundary: `id` must not match `identity`, and a field
                 # still present in the added lines was moved, not dropped.
                 word = re.compile(rf"(?<!\w){re.escape(leaf)}\b")
-                if word.search(added):
+                if word.search(added) or word.search(moved_to):
                     continue
                 hit = next((l for l in removed
                             if word.search(l)
-                            and not _COMMENT.match(l)
                             and _structural(leaf, l, generic=_is_generic(leaf))
                             and (not _is_generic(leaf)
                                  or _corroborated(contract, field_path, l))), None)
@@ -221,7 +320,7 @@ def removed_contracts(
     for path, body in diffs.items():
         if _PROSE.search(path) or _TEST_PATH.search(path):
             continue
-        removed = [l[1:] for l in body.splitlines() if l.startswith("-")]
+        removed = code_removed(body, file_text.get(path))
         added = "\n".join(l[1:] for l in body.splitlines() if l.startswith("+"))
         for contract, others in owned.items():
             if not others:
@@ -235,7 +334,7 @@ def removed_contracts(
                 continue                    # still there afterwards: not a removal
             pattern = _DEFINITION.get(contract.surface)
             hit = next((l for l in removed
-                        if name in l and not _COMMENT.match(l)
+                        if name in l
                         and (pattern is None or pattern.search(l))), None)
             if hit is None:
                 continue

@@ -519,7 +519,7 @@ class LiveIndex:
         than merely containing the word. Literal: a field read through a
         generated client or another module is not seen.
         """
-        from ledger.core.breaks import _COMMENT, _structural
+        from ledger.core.breaks import _structural, prose_mask
         out: dict = {}
         names = sorted({n for n in names if n and len(n) >= 3})
         if not names:
@@ -540,8 +540,9 @@ class LiveIndex:
                 for name in names:
                     word = re.compile(rf"(?<!\w){re.escape(name)}\b")
                     where = next((p for p, text in sorted(texts.items())
-                                  for line in text.splitlines()
-                                  if word.search(line) and not _COMMENT.match(line)
+                                  for line, prose in zip(text.splitlines(),
+                                                         prose_mask(text.splitlines()))
+                                  if not prose and word.search(line)
                                   and _structural(name, line)), None)
                     if where:
                         out.setdefault(c, {}).setdefault(name, []).append(

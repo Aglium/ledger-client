@@ -291,3 +291,65 @@ class TestMovedNotRemoved:
         line = 'INVOICE_EVENTS_TOPIC = _topic("KAFKA_TOPIC_INVOICE_EVENTS", "invoice.events.v1")'
         after = {"INVOICE_EVENTS_TOPIC": {"invoice.events.v2"}, "KAFKA_TOPIC_INVOICE_EVENTS": {"invoice.events.v1"}}
         assert not moved_binding(line, "invoice.events.v1", lambda ident: after.get(ident, set()))
+
+
+class TestForgeworldFalseBreaks:
+    """Two false decision_needed from a real estate, and their causes."""
+
+    def test_a_field_moved_to_another_file_of_the_change_is_not_removed(self):
+        """`list_claims` left one module for another in the same diff."""
+        wanted = {TOPIC: ["stages[].list_claims"]}
+        diffs = {
+            "app/cases/utils/claim_resolve.py": "-    claims = gateway.list_claims(case_id)",
+            "app/repositories/gateway.py": "+    def list_claims(self, case_id):",
+        }
+        assert removed_fields(diffs, wanted) == []
+
+    def test_a_field_only_in_a_test_or_a_doc_elsewhere_is_still_removed(self):
+        wanted = {TOPIC: ["stages[].list_claims"]}
+        diffs = {
+            "app/cases/utils/claim_resolve.py": "-    claims = gateway.list_claims(case_id)",
+            "tests/test_gateway.py": "+    gateway.list_claims(1)",
+            "docs/gateway.md": "+ `list_claims` moved",
+        }
+        assert [g.field_path for g in removed_fields(diffs, wanted)] == ["stages[].list_claims"]
+
+    def test_a_line_from_the_middle_of_a_docstring_is_not_code(self):
+        table = ContractRef(Surface.TABLE, "claim_events")
+        after = 'class ClaimEvent(Base):\n    """A claim event.\n\n    The end.\n    """\n    __tablename__ = "claim_events"\n'
+        body = ("@@ -1,6 +1,5 @@\n"
+                " class ClaimEvent(Base):\n"
+                '     """A claim event.\n'
+                "-    The ``kind`` column says what happened; `kind` is never null.\n"
+                " \n"
+                "     The end.\n"
+                '     """\n')
+        got = removed_fields({"app/entities/claim_events.py": body.replace("kind", "claim_kind_label")},
+                             {table: ["claim_kind_label"]},
+                             file_text={"app/entities/claim_events.py": after + "claim_events"})
+        assert got == []
+
+    def test_a_hunk_that_starts_inside_a_docstring_knows_it_from_the_file(self):
+        table = ContractRef(Surface.TABLE, "claim_events")
+        after = ('class ClaimEvent(Base):\n    """A claim event.\n\n    Long text\n    more text\n'
+                 '    """\n    __tablename__ = "claim_events"\n')
+        body = ("@@ -4,4 +4,3 @@ class ClaimEvent(Base):\n"
+                "     Long text\n"
+                '-    `claim_kind_label` is shown to agents.\n'
+                "     more text\n"
+                '     """\n')
+        assert removed_fields({"m.py": body}, {table: ["claim_kind_label"]},
+                              file_text={"m.py": after}) == []
+
+    def test_sql_in_a_string_the_code_runs_is_still_code(self):
+        from ledger.core.breaks import code_removed
+        body = ('@@ -1,4 +1,3 @@\n'
+                ' op.execute("""\n'
+                '-    ALTER TABLE claim_events DROP COLUMN claim_kind_label\n'
+                ' """)\n')
+        assert code_removed(body) == ["    ALTER TABLE claim_events DROP COLUMN claim_kind_label"]
+
+    def test_rst_double_backticks_are_not_a_quoted_key(self):
+        from ledger.core.breaks import _structural
+        assert not _structural("kind", "The ``kind`` column")
+        assert _structural("kind", "SELECT `kind` FROM claim_events")

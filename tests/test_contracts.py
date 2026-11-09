@@ -250,3 +250,34 @@ class TestRouteUnderItsRouter:
         from ledger.core.contracts import under_router
         assert under_router("/{invoice_id}/assign/", "/internal/v1/invoices/{id}/assign/",
                             "app/api/v1/invoices/assign.py")
+
+
+class TestRouterPrefix:
+    """A route on a router with a prefix is served under that prefix."""
+
+    def routes(self, text):
+        from ledger.core.contracts import discover_in_text
+        return sorted(e.contract.name for e in discover_in_text("crm", "app/api/v1/crm.py", text)
+                      if e.contract.surface.value == "http")
+
+    def test_the_prefix_is_part_of_the_route(self):
+        text = ('from fastapi import APIRouter, Depends\n\n'
+                'router = APIRouter(\n    prefix="/api/v1/crm",\n    dependencies=[Depends(auth)],\n)\n\n'
+                '@router.get("/claims")\ndef claims(): ...\n\n'
+                '@router.post(\n    "/claims/{claim_id}/notes",\n)\ndef note(): ...\n\n'
+                '@router.get("/")\ndef index(): ...\n')
+        assert self.routes(text) == ["/api/v1/crm", "/api/v1/crm/claims", "/api/v1/crm/claims/{claim_id}/notes"]
+
+    def test_a_router_without_a_prefix_and_a_client_call_are_unchanged(self):
+        text = ('other = APIRouter()\nrouter = APIRouter(prefix="/crm")\n'
+                '@other.get("/claims")\ndef a(): ...\n'
+                'resp = client.get("/claims")\n')
+        assert self.routes(text) == ["/claims", "/claims"]
+
+    def test_a_blueprint_url_prefix(self):
+        text = 'bp = Blueprint("crm", __name__, url_prefix="/crm/")\n@bp.get("/claims")\ndef a(): ...\n'
+        assert self.routes(text) == ["/crm/claims"]
+
+    def test_a_prefixed_route_no_longer_matches_a_bare_one_elsewhere(self):
+        from ledger.core.contracts import http_equivalent
+        assert not http_equivalent("/claims", "/api/v1/crm/claims")

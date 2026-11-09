@@ -56,7 +56,7 @@ class ContractEdge:
 #: Bump whenever a change here alters what discover() returns. The stored index
 #: keys on it: rows written by an older extractor are treated as stale and read
 #: live until the next sync rescans them, so an upgrade never serves old answers.
-EXTRACTOR_VERSION = "7"
+EXTRACTOR_VERSION = "8"
 
 # A dotted, lowercase literal is how most brokers name a topic.
 _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]")
@@ -198,11 +198,49 @@ class Discovery:
         return out
 
 
+#: `router = APIRouter(prefix="/api/v1/crm")`, `bp = Blueprint(..., url_prefix="/x")`.
+_ROUTER_HEAD = re.compile(r"(?m)^\s*(?P<var>\w+)\s*(?::[^=\n]*)?=\s*(?:[\w.]+\.)?(?:APIRouter|Blueprint)\s*\(")
+_PREFIX_ARG = re.compile(r"""\b(?:url_)?prefix\s*=\s*['"](?P<p>/[\w{}/.\-]*)['"]""")
+_DECORATED_BY = re.compile(r"@(?P<var>\w+)\.")
+
+
+def router_prefixes(text: str) -> dict[str, str]:
+    """`{router variable: prefix}` for routers this file creates with a literal prefix.
+
+    A route declared on a router is served under the router's prefix:
+    `@router.get("/claims")` under `APIRouter(prefix="/api/v1/crm")` is
+    `/api/v1/crm/claims`. Stored as `/claims`, it was joined to a gateway's
+    own `/claims` that another service calls, and a field of one was reported
+    as read through the other. A prefix set where the router is mounted, in
+    another file, is not seen here.
+    """
+    out: dict[str, str] = {}
+    for m in _ROUTER_HEAD.finditer(text):
+        depth, i = 1, m.end()
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        p = _PREFIX_ARG.search(text, m.end(), i)
+        if p and p.group("p").strip("/"):
+            out[m.group("var")] = "/" + p.group("p").strip("/")
+    return out
+
+
+def _prefixed(prefixes: dict[str, str], decorator: str, path: str) -> str:
+    """The route a decorator declares, under its router's prefix if it has one."""
+    m = _DECORATED_BY.search(decorator)
+    pre = prefixes.get(m.group("var")) if m else None
+    if not pre:
+        return path
+    return pre if path.strip("/") == "" else pre + "/" + path.lstrip("/")
+
+
 def discover_in_text(repo: str, path: str, text: str) -> list[ContractEdge]:
     """Contracts named in one file, with direction read from the call site."""
     out: list[ContractEdge] = []
     lines = text.splitlines()
     low = path.lower()
+    prefixes = router_prefixes(text) if ("APIRouter" in text or "Blueprint" in text) else {}
 
     for i, line in enumerate(lines):
         window = "\n".join(lines[max(0, i - 3):i + 4])
@@ -216,9 +254,12 @@ def discover_in_text(repo: str, path: str, text: str) -> list[ContractEdge]:
                                     _direction(line, window), path, line.strip()[:200]))
         for m in _HTTP_DECL.finditer(line):
             http_path = m.group("path")
+            declared = bool(_HTTP_ROUTE_DECORATOR.search(m.group(0)))
+            if declared:
+                http_path = _prefixed(prefixes, m.group(0), http_path)
             if http_path.rstrip("/").lower() in _INFRA_PATHS or http_path == "/":
                 continue
-            edge = Edge.PUBLISHES if _HTTP_ROUTE_DECORATOR.search(m.group(0)) else Edge.CONSUMES
+            edge = Edge.PUBLISHES if declared else Edge.CONSUMES
             out.append(ContractEdge(repo, ContractRef(Surface.HTTP, http_path),
                                     edge, path, line.strip()[:200]))
         for m in _HTTP_TEMPLATE_CALL.finditer(line):
@@ -236,9 +277,10 @@ def discover_in_text(repo: str, path: str, text: str) -> list[ContractEdge]:
                                         Edge.PUBLISHES, path, line.strip()[:200]))
 
     for m in _HTTP_ROUTE_MULTILINE.finditer(text):
-        if m.group("path").rstrip("/").lower() in _INFRA_PATHS:
+        http_path = _prefixed(prefixes, m.group(0), m.group("path"))
+        if http_path.rstrip("/").lower() in _INFRA_PATHS or http_path == "/":
             continue
-        out.append(ContractEdge(repo, ContractRef(Surface.HTTP, m.group("path")),
+        out.append(ContractEdge(repo, ContractRef(Surface.HTTP, http_path),
                                 Edge.PUBLISHES, path, "route decorator"))
 
     # A generated client is the consumer's copy of someone else's contract.
