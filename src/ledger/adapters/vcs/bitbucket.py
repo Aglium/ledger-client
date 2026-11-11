@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime
 
 import httpx
@@ -16,6 +18,11 @@ def _ts(v: str | None) -> datetime | None:
         return None
     return datetime.fromisoformat(v.replace("Z", "+00:00"))
 
+
+
+#: A hunk header without the function heading git appends to it: that is
+#: text from the file, not from the change, and would read as changed.
+_HUNK_HEAD = re.compile(r"^(@@ [^@]* @@).*$")
 
 class BitbucketAdapter(VcsAdapter):
     source = "bitbucket"
@@ -107,7 +114,9 @@ class BitbucketAdapter(VcsAdapter):
         """Bitbucket returns a unified diff as text, not JSON. `..` is its
         merge-base form (`...` means something else here than on GitHub)."""
         try:
-            r = self._client.get(f"/repositories/{repo}/diff/{head}..{base}")
+            # No context, as local git gives it: hunk headers then say exactly
+            # where each changed line stands in the file after the change.
+            r = self._client.get(f"/repositories/{repo}/diff/{head}..{base}", params={"context": 0})
         except httpx.HTTPError as e:
             raise ForgeUnavailable(self.source, str(e)) from e
         if r.status_code >= 400:
@@ -119,8 +128,8 @@ class BitbucketAdapter(VcsAdapter):
                 if path:
                     out.append(ChangedFile(path=path, body="\n".join(buf)))
                 path, buf = line.split(" b/", 1)[-1], []
-            elif path and line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
-                buf.append(line)
+            elif path and line.startswith(("+", "-", "@@")) and not line.startswith(("+++", "---")):
+                buf.append(_HUNK_HEAD.sub(r"\1", line) if line.startswith("@@") else line)
         if path:
             out.append(ChangedFile(path=path, body="\n".join(buf)))
         return out

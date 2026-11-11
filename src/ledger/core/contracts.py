@@ -56,7 +56,7 @@ class ContractEdge:
 #: Bump whenever a change here alters what discover() returns. The stored index
 #: keys on it: rows written by an older extractor are treated as stale and read
 #: live until the next sync rescans them, so an upgrade never serves old answers.
-EXTRACTOR_VERSION = "8"
+EXTRACTOR_VERSION = "9"
 
 # A dotted, lowercase literal is how most brokers name a topic.
 _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]")
@@ -204,6 +204,128 @@ _PREFIX_ARG = re.compile(r"""\b(?:url_)?prefix\s*=\s*['"](?P<p>/[\w{}/.\-]*)['"]
 _DECORATED_BY = re.compile(r"@(?P<var>\w+)\.")
 
 
+def _routers_in(text: str) -> dict[str, str]:
+    """`{router variable: its own prefix, or ""}` for every router this file creates."""
+    out: dict[str, str] = {}
+    for m in _ROUTER_HEAD.finditer(text):
+        args = _call_args(text, m.end())
+        p = _PREFIX_ARG.search(args)
+        out[m.group("var")] = "/" + p.group("p").strip("/") if p and p.group("p").strip("/") else ""
+    return out
+
+
+def _call_args(text: str, start: int) -> str:
+    """The argument text of a call whose `(` ends just before `start`."""
+    depth, i = 1, start
+    while i < len(text) and depth:
+        depth += {"(": 1, ")": -1}.get(text[i], 0)
+        i += 1
+    return text[start:i - 1]
+
+
+#: `v1.include_router(investor_router, prefix="/investor")`, `app.register_blueprint(bp, url_prefix=...)`.
+_MOUNT = re.compile(r"(?P<outer>\w+)\.(?:include_router|register_blueprint)\s*\(\s*(?P<inner>[\w.]+)")
+_FROM_IMPORT = re.compile(r"(?m)^\s*from\s+(?P<mod>\.*[\w.]*)\s+import\s+(?P<names>\([^)]*\)|[^\n#]+)")
+_IMPORT_AS = re.compile(r"(?m)^\s*import\s+(?P<mod>[\w.]+)\s+as\s+(?P<alias>\w+)")
+
+
+def _module_file(mod: str, here: str, paths: set[str]) -> str | None:
+    """The file a module name means, seen from file `here`: `app.investor.router`
+    -> `app/investor/router.py`; a leading dot is relative to `here`'s package."""
+    dots = len(mod) - len(mod.lstrip("."))
+    parts = [x for x in mod.lstrip(".").split(".") if x]
+    if dots:
+        base = here.split("/")[:-1]
+        base = base[:len(base) - (dots - 1)] if dots > 1 else base
+        parts = base + parts
+    if not parts:
+        return None
+    stem = "/".join(parts)
+    for cand in (f"{stem}.py", f"{stem}/__init__.py"):
+        hits = [p for p in paths if p == cand or p.endswith("/" + cand)]
+        if hits:
+            return min(hits, key=len)
+    return None
+
+
+def _imported(text: str, here: str, paths: set[str]) -> dict[str, tuple[str, str | None]]:
+    """`{local name: (module name, imported name or None for a module)}`."""
+    out: dict[str, tuple[str, str | None]] = {}
+    for m in _FROM_IMPORT.finditer(text):
+        for item in m.group("names").strip("()").split(","):
+            bits = item.split()
+            if not bits or not re.fullmatch(r"\w+", bits[0]):
+                continue
+            alias = bits[2] if len(bits) == 3 and bits[1] == "as" else bits[0]
+            out[alias] = (m.group("mod"), bits[0])
+    for m in _IMPORT_AS.finditer(text):
+        out[m.group("alias")] = (m.group("mod"), None)
+    return out
+
+
+def mounted_prefixes(texts: dict[str, str]) -> dict[str, dict[str, str]]:
+    """`{path: {router variable: full prefix}}` across a repository's files.
+
+    A router's own prefix is only part of its route. `investor_router` declared
+    with no prefix in `app/investor/router.py` and mounted in `app/routers.py`
+    with `v1.include_router(investor_router, prefix="/investor")` serves
+    `/investor/claims`, not `/claims` -- and stored as `/claims` it was shared
+    with a gateway call to an unrelated service. Literal and Python only: a
+    prefix built at runtime, or a mount through a factory, is not seen.
+    """
+    py = {p: t for p, t in texts.items() if p.endswith(".py") and t}
+    paths = set(py)
+    own = {p: _routers_in(t) for p, t in py.items() if "APIRouter" in t or "Blueprint" in t}
+    # (file, var) -> [(outer file, outer var, mount prefix)]
+    mounts: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+    for path, text in sorted(py.items()):
+        if "include_router" not in text and "register_blueprint" not in text:
+            continue
+        imports = None
+        for m in _MOUNT.finditer(text):
+            args = _call_args(text, text.index("(", m.start()) + 1)
+            p = _PREFIX_ARG.search(args)
+            pre = "/" + p.group("p").strip("/") if p and p.group("p").strip("/") else ""
+            inner = m.group("inner")
+            target = None
+            if inner in own.get(path, {}):
+                target = (path, inner)
+            else:
+                imports = imports if imports is not None else _imported(text, path, paths)
+                head, _, attr = inner.partition(".")
+                if head in imports:
+                    mod, name = imports[head]
+                    if attr and name is None:                       # import a.b as m; m.router
+                        f = _module_file(mod, path, paths)
+                        target = (f, attr) if f else None
+                    elif attr:                                      # from a import b; b.router
+                        f = _module_file(f"{mod}.{name}" if not mod.endswith(".") else mod + name, path, paths)
+                        target = (f, attr) if f else None
+                    else:                                           # from a.b import router as x
+                        f = _module_file(mod, path, paths)
+                        target = (f, name) if f else None
+            if target and target[1] in own.get(target[0], {}):
+                mounts.setdefault(target, []).append((path, m.group("outer"), pre))
+
+    def full(key: tuple[str, str], seen: frozenset) -> str:
+        mine = own.get(key[0], {}).get(key[1], "")
+        up = ""
+        for f, var, pre in sorted(mounts.get(key, [])):
+            if (f, var) in seen:
+                continue
+            up = full((f, var), seen | {key}) + pre
+            break
+        return (up + mine) if (up or mine) else ""
+
+    out: dict[str, dict[str, str]] = {}
+    for path, routers in own.items():
+        for var in routers:
+            pre = full((path, var), frozenset())
+            if pre.strip("/"):
+                out.setdefault(path, {})[var] = "/" + pre.strip("/")
+    return out
+
+
 def router_prefixes(text: str) -> dict[str, str]:
     """`{router variable: prefix}` for routers this file creates with a literal prefix.
 
@@ -214,16 +336,7 @@ def router_prefixes(text: str) -> dict[str, str]:
     as read through the other. A prefix set where the router is mounted, in
     another file, is not seen here.
     """
-    out: dict[str, str] = {}
-    for m in _ROUTER_HEAD.finditer(text):
-        depth, i = 1, m.end()
-        while i < len(text) and depth:
-            depth += {"(": 1, ")": -1}.get(text[i], 0)
-            i += 1
-        p = _PREFIX_ARG.search(text, m.end(), i)
-        if p and p.group("p").strip("/"):
-            out[m.group("var")] = "/" + p.group("p").strip("/")
-    return out
+    return {var: pre for var, pre in _routers_in(text).items() if pre}
 
 
 def _prefixed(prefixes: dict[str, str], decorator: str, path: str) -> str:
@@ -235,12 +348,21 @@ def _prefixed(prefixes: dict[str, str], decorator: str, path: str) -> str:
     return pre if path.strip("/") == "" else pre + "/" + path.lstrip("/")
 
 
-def discover_in_text(repo: str, path: str, text: str) -> list[ContractEdge]:
-    """Contracts named in one file, with direction read from the call site."""
+def discover_in_text(repo: str, path: str, text: str, *,
+                     routers: dict[str, str] | None = None) -> list[ContractEdge]:
+    """Contracts named in one file, with direction read from the call site.
+
+    `routers`, when given, is `{router variable: full prefix}` for this file,
+    from `mounted_prefixes` over the repository; `text` may then be a diff
+    body, which never carries the line that creates the router.
+    """
     out: list[ContractEdge] = []
     lines = text.splitlines()
     low = path.lower()
-    prefixes = router_prefixes(text) if ("APIRouter" in text or "Blueprint" in text) else {}
+    if routers is not None:
+        prefixes = routers
+    else:
+        prefixes = router_prefixes(text) if ("APIRouter" in text or "Blueprint" in text) else {}
 
     for i, line in enumerate(lines):
         window = "\n".join(lines[max(0, i - 3):i + 4])
@@ -518,12 +640,13 @@ def discover(
                 texts[path] = read(path)
             except Exception:
                 continue
+    mounted = mounted_prefixes({p: t for p, t in texts.items() if t and len(t) <= per_file_limit})
     for path in wanted:
         text = texts.get(path)
         if not text or len(text) > per_file_limit:
             continue
         d.files_read += 1
-        d.edges.extend(discover_in_text(repo, path, text))
+        d.edges.extend(discover_in_text(repo, path, text, routers=mounted.get(path, {})))
     d.edges = _drop_noise(d.edges, _module_paths(tree))
     return d
 

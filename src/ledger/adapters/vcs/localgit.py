@@ -87,6 +87,11 @@ def _as_utc(value) -> datetime | None:
     return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+
+#: A hunk header without the function heading git appends to it: that is
+#: text from the file, not from the change, and would read as changed.
+_HUNK_HEAD = re.compile(r"^(@@ [^@]* @@).*$")
+
 class LocalGitAdapter(VcsAdapter):
     source = "localgit"
     supports_comments = False
@@ -439,8 +444,10 @@ class LocalGitAdapter(VcsAdapter):
                 if path:
                     out.append(ChangedFile(path=path, body="\n".join(buf)))
                 path, buf = line.split(" b/", 1)[-1], []
-            elif path and (line.startswith(("+", "-")) and not line.startswith(("+++", "---"))):
-                buf.append(line)
+            elif path and (line.startswith(("+", "-", "@@")) and not line.startswith(("+++", "---"))):
+                # Hunk headers stay: they say where a deleted line stood, and
+                # a line from the middle of a docstring reads as code without.
+                buf.append(_HUNK_HEAD.sub(r"\1", line) if line.startswith("@@") else line)
         if path:
             out.append(ChangedFile(path=path, body="\n".join(buf)))
         return out

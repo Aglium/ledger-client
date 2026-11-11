@@ -765,6 +765,36 @@ class LiveIndex:
 
 # ------------------------------------------------------------------- brief --
 
+_ROUTE_IN_DIFF = re.compile(r"@\w+\.(?:get|post|put|patch|delete)\s*\(", re.I)
+
+
+def _route_prefixes(vcs, repo: str, ref: str, files, local) -> dict[str, dict[str, str]]:
+    """`{path: {router variable: full prefix}}` for the changed files that
+    declare routes, as the index computes it -- or a route this diff touches is
+    `/claims` here and `/api/v1/crm/claims` in the index, and links to the
+    wrong service. A diff body never carries the line that creates the router,
+    nor the file that mounts it."""
+    from ledger.core.contracts import mounted_prefixes
+    declaring = [f.path for f in files if f.path.endswith(".py") and _ROUTE_IN_DIFF.search(f.body or "")]
+    if not declaring:
+        return {}
+    from ledger.adapters.vcs.base import VcsAdapter
+    try:
+        # Where git answers a grep itself. Over a forge API the default grep
+        # reads the whole tree, which is not a price for one brief: there the
+        # changed files' own prefixes are all that is read.
+        mounts = (vcs.grep_paths(repo, ref, ["include_router", "register_blueprint"])
+                  if type(vcs).grep_paths is not VcsAdapter.grep_paths else [])
+        texts = vcs.read_files(repo, ref, sorted(set(declaring) | {m for m in mounts if m.endswith(".py")}))
+    except ForgeUnavailable:
+        texts = {}
+    if local is not None:
+        texts = {**texts, **{p: t for p, t in local.texts.items() if p.endswith(".py")}}
+    got = mounted_prefixes(texts)
+    # A file read that declares no prefixed router still gets an answer: none.
+    return {p: got.get(p, {}) for p in declaring if p in texts}
+
+
 def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                   open_index, *, collected=None, worktree: bool = False,
                   allow_missing_ref: bool = False, subject: Subject | None = None,
@@ -892,8 +922,9 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         from ledger.pipeline.signals import signals_of
         subject_signals = signals_of(shipped)
         edges = []
+        routers = _route_prefixes(vcs, repo, ref, shipped, local)
         for f in shipped:
-            edges.extend(discover_in_text(repo, f.path, f.body))
+            edges.extend(discover_in_text(repo, f.path, f.body, routers=routers.get(f.path)))
         touched_set = {e.contract for e in edges}
         # A change often touches a topic through its constant, not the literal:
         # `producer.send(INVOICE_EVENTS_TOPIC, ...)`. Bindings stored for this

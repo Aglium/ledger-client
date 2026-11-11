@@ -281,3 +281,67 @@ class TestRouterPrefix:
     def test_a_prefixed_route_no_longer_matches_a_bare_one_elsewhere(self):
         from ledger.core.contracts import http_equivalent
         assert not http_equivalent("/claims", "/api/v1/crm/claims")
+
+
+class TestMountedPrefix:
+    """A router mounted elsewhere serves under the mount's prefix too."""
+
+    FILES = {
+        "app/investor/router.py": ('from fastapi import APIRouter\nrouter = APIRouter(tags=["investor"])\n\n'
+                                   '@router.get("/claims")\ndef claims(): ...\n'),
+        "app/routers.py": ('from fastapi import APIRouter\n'
+                           'from app.investor.router import router as investor_router\n'
+                           'from app.crm import api as crm_api\n'
+                           'v1 = APIRouter(prefix="/api/v1")\n'
+                           'v1.include_router(investor_router, prefix="/investor", dependencies=[Depends(a)])\n'
+                           'v1.include_router(crm_api.router)\n'),
+        "app/crm/api.py": 'router = APIRouter(prefix="/crm")\n@router.get("/claims")\ndef c(): ...\n',
+        "app/main.py": 'from .routers import v1\napp = FastAPI()\napp.include_router(v1)\n',
+    }
+
+    def test_the_mount_chain_is_followed(self):
+        from ledger.core.contracts import mounted_prefixes
+        got = mounted_prefixes(self.FILES)
+        assert got["app/investor/router.py"] == {"router": "/api/v1/investor"}
+        assert got["app/crm/api.py"] == {"router": "/api/v1/crm"}
+        assert got["app/routers.py"] == {"v1": "/api/v1"}
+
+    def test_discover_stores_the_full_route(self):
+        from ledger.core.contracts import discover
+        d = discover("loms", list(self.FILES), None, read_many=lambda ps: {p: self.FILES[p] for p in ps})
+        routes = sorted(e.contract.name for e in d.edges if e.contract.surface.value == "http")
+        assert routes == ["/api/v1/crm/claims", "/api/v1/investor/claims"]
+
+    def test_a_diff_body_gets_the_same_route(self):
+        """The brief reads routes from the diff; it must name what the index stores."""
+        from ledger.core.contracts import discover_in_text, mounted_prefixes
+        routers = mounted_prefixes(self.FILES)["app/investor/router.py"]
+        body = '@@ -4,0 +5,2 @@\n+@router.get("/claims")\n+def claims(): ...'
+        got = [e.contract.name for e in discover_in_text("loms", "app/investor/router.py", body, routers=routers)]
+        assert got == ["/api/v1/investor/claims"]
+
+    def test_an_unresolvable_mount_changes_nothing(self):
+        from ledger.core.contracts import mounted_prefixes
+        files = {"app/r.py": 'from somewhere_else import router\napp.include_router(router, prefix="/x")\n',
+                 "app/a.py": 'router = APIRouter()\n@router.get("/claims")\ndef c(): ...\n'}
+        assert mounted_prefixes(files) == {}
+
+
+class TestTheBriefNamesTheRouteTheIndexStores:
+    def test_route_prefixes_from_a_mirror(self, tmp_path):
+        import subprocess
+        from ledger.adapters.vcs.base import ChangedFile
+        from ledger.adapters.vcs.localgit import LocalGitAdapter
+        from ledger.service import _route_prefixes
+        repo = tmp_path / "loms"
+        for path, text in TestMountedPrefix.FILES.items():
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_text(text)
+        env = {"GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@x", "GIT_COMMITTER_NAME": "a",
+               "GIT_COMMITTER_EMAIL": "a@x", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+        for a in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "x"]):
+            subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, env=env)
+        files = [ChangedFile(path="app/investor/router.py", body='+@router.get("/claims")'),
+                 ChangedFile(path="app/models.py", body="+x = 1")]
+        got = _route_prefixes(LocalGitAdapter(str(tmp_path)), "loms", "main", files, None)
+        assert got == {"app/investor/router.py": {"router": "/api/v1/investor"}}

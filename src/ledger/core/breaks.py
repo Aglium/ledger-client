@@ -70,7 +70,7 @@ _COMMENT = re.compile(r'^\s*(#|//|/\*|\*|--|"""|\'\'\'|<!--|>)')
 #: of a model's docstring, was read as the column being dropped.
 _BLOCK = re.compile(r'"""|\'\'\'|/\*')
 _CLOSES = {'"""': '"""', "'''": "'''", "/*": "*/"}
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 #: An open block: its delimiter, and whether it is documentation. A triple
 #: quote that opens a line is a docstring; one after `=` or `(` is a string
@@ -145,7 +145,10 @@ def code_removed(body: str, after: str | None = None) -> list[str]:
         h = _HUNK.match(raw)
         if h:
             flush(opened)
-            opened = _open_at(after, int(h.group(1))) if after else None
+            # `+c,0` -- nothing left on the new side, as in a deletion under
+            # `--unified=0` -- names the line BEFORE the hunk, not its first.
+            start = int(h.group(1)) + (1 if h.group(2) == "0" else 0)
+            opened = _open_at(after, start) if after else None
         elif raw.startswith("-") and not raw.startswith("---"):
             old.append((raw[1:], True))
         elif raw.startswith(" "):

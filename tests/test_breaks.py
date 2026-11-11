@@ -353,3 +353,41 @@ class TestForgeworldFalseBreaks:
         from ledger.core.breaks import _structural
         assert not _structural("kind", "The ``kind`` column")
         assert _structural("kind", "SELECT `kind` FROM claim_events")
+
+
+class TestTheBodyLocalGitGives:
+    """The server reads mirrors through local git, `--unified=0`. Without hunk
+    headers a deleted line from the middle of a docstring read as code."""
+
+    def test_a_docstring_line_deleted_on_a_mirror_is_prose(self, tmp_path):
+        import subprocess
+        from ledger.adapters.vcs.localgit import LocalGitAdapter
+        repo = tmp_path / "leads"
+        repo.mkdir()
+
+        def git(*a):
+            subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True,
+                           env={"GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@x", "GIT_COMMITTER_NAME": "a",
+                                "GIT_COMMITTER_EMAIL": "a@x", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"})
+        git("init", "-q", "-b", "main")
+        f = repo / "app" / "entities" / "claim_events.py"
+        f.parent.mkdir(parents=True)
+        before = ('class ClaimEvent(Base):\n    """One event of a claim.\n\n    Columns:\n'
+                  '    "claim_kind_label" is what agents see.\n    The rest is internal.\n    """\n'
+                  '    __tablename__ = "claim_events"\n    claim_kind_label = Column(String)\n')
+        f.write_text(before)
+        git("add", "-A"); git("commit", "-qm", "one")
+        git("checkout", "-qb", "feat")
+        f.write_text(before.replace('    "claim_kind_label" is what agents see.\n', ""))
+        git("commit", "-qam", "two")
+        files = LocalGitAdapter(str(tmp_path)).changed_files("leads", "main", "feat")
+        body = files[0].body
+        assert body.startswith("@@ ") and body.splitlines()[1].startswith("-")
+        table = ContractRef(Surface.TABLE, "claim_events")
+        after = f.read_text()
+        assert removed_fields({files[0].path: body}, {table: ["claim_kind_label"]},
+                              file_text={files[0].path: after}) == []
+        # Without the headers -- what the server used to get -- it fired.
+        bare = "\n".join(l for l in body.splitlines() if not l.startswith("@@"))
+        assert removed_fields({files[0].path: bare}, {table: ["claim_kind_label"]},
+                              file_text={files[0].path: after}) != []
