@@ -47,6 +47,65 @@ def origin_name(p: Path) -> str | None:
     return name[:-4] if name.endswith(".git") else name or None
 
 
+#: How long a repository's open pull requests are reused. The server syncs
+#: every few minutes over ~180 repositories; asking each forge every time is
+#: more calls an hour than Bitbucket allows, and a pull request opened ten
+#: minutes ago is not what a brief misses.
+PULLS_TTL = 900.0
+_PULLS: dict[tuple[str, str], tuple[float, list]] = {}
+_PULLS_LOCK = __import__("threading").Lock()
+
+_ORIGIN = re.compile(r"^(?:[a-z+]+://(?:[^@/]+@)?(?P<h1>[^/:]+)(?::\d+)?/|[^@]+@(?P<h2>[^:]+):)"
+                     r"(?P<path>[^?#]+?)(?:\.git)?/?$")
+
+
+def forge_name(p: Path) -> tuple[str, str] | None:
+    """`(host, "Org/name")` of a repository's origin, or None.
+
+    `https://github.com/Acme/orders.git` and `git@github.com:Acme/orders.git`
+    are both `("github.com", "Acme/orders")`.
+    """
+    try:
+        r = subprocess.run(["git", "-C", str(p), "config", "--get", "remote.origin.url"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _ORIGIN.match(r.stdout.strip()) if r.returncode == 0 else None
+    if not m or m.group("path").count("/") != 1:
+        return None
+    return (m.group("h1") or m.group("h2")).lower(), m.group("path")
+
+
+def _serves(forge, host: str, full_name: str) -> bool:
+    """Is this forge adapter the one for that origin? By organisation, then host."""
+    ns = getattr(forge, "org", None) or getattr(forge, "workspace", None)
+    if not ns or full_name.split("/", 1)[0].lower() != str(ns).lower():
+        return False
+    kind = {"github": "github", "bitbucket": "bitbucket"}.get(getattr(forge, "source", ""), "")
+    return not kind or kind in host or getattr(forge, "host", "") == host
+
+
+def _cached_pulls(forge, full_name: str) -> list:
+    """`forge.list_open_pulls`, reused for `PULLS_TTL`. A forge that fails
+    falls back to the last answer it gave; with none, the failure stands."""
+    import time
+    key = (getattr(forge, "source", type(forge).__name__), full_name)
+    now = time.monotonic()
+    with _PULLS_LOCK:
+        hit = _PULLS.get(key)
+    if hit and now - hit[0] < PULLS_TTL:
+        return hit[1]
+    try:
+        got = forge.list_open_pulls(full_name)
+    except ForgeUnavailable:
+        if hit:
+            return hit[1]
+        raise
+    with _PULLS_LOCK:
+        _PULLS[key] = (now, got)
+    return got
+
+
 def _git(repo: Path, *args: str, timeout: float = 30, env: dict | None = None) -> str:
     try:
         r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
@@ -98,14 +157,18 @@ class LocalGitAdapter(VcsAdapter):
     supports_diffs = True
     supports_tree = True
 
-    def __init__(self, root: str | Path | list):
+    def __init__(self, root: str | Path | list, *, pulls_from: list | None = None):
         """One or more directories holding repositories.
 
         With several, the first that has a repository wins. That is how a
         developer's own checkouts sit in front of the server's mirrors: the
         checkout has a working tree, so uncommitted work is visible, and the
         mirrors supply every repository nobody checked out.
+
+        `pulls_from`: forge adapters that answer the one question git cannot
+        -- which pull requests are open. Code still comes from disk.
         """
+        self._pulls_from = list(pulls_from or [])
         roots = root if isinstance(root, (list, tuple)) else [root]
         self.roots = [Path(r).expanduser() for r in roots]
         self.roots = [r for r in self.roots if r.is_dir()]
@@ -295,11 +358,31 @@ class LocalGitAdapter(VcsAdapter):
         return failed
 
     def list_open_pulls(self, repo: str) -> list[PullRef]:
-        """Local clones carry no PR state. Empty is the truthful answer here,
-        not a degraded one -- branches alone still drive the join. The path
-        check still runs, so a missing repo raises rather than reading empty."""
-        self._path(repo)
-        return []
+        """Open pull requests, from the forge the repository's origin is on.
+
+        Git carries no pull-request state, and a mirror-only server used to
+        answer empty: on a real estate 140 of 242 open pull requests were not
+        in flight at all, because only branches with a commit in the last 30
+        days were, and a review waiting since September has none. So the list
+        comes from the forge's API -- one paged call per repository, cached
+        for `PULLS_TTL` -- while everything else is still read from disk.
+
+        With no forge for this origin it is still empty, and that is the
+        truthful answer, not a degraded one. The path check runs either way,
+        so a missing repo raises rather than reading empty.
+        """
+        p = self._path(repo)
+        if not self._pulls_from:
+            return []
+        where = forge_name(p)
+        if where is None:
+            return []
+        host, full_name = where
+        forge = next((f for f in self._pulls_from if _serves(f, host, full_name)), None)
+        if forge is None:
+            return []
+        import dataclasses
+        return [dataclasses.replace(pr, repo=repo) for pr in _cached_pulls(forge, full_name)]
 
     def upsert_comment(self, repo: str, pull_number: int, marker: str, body: str) -> str:
         raise ForgeUnavailable(self.source, "local clones have no pull requests to comment on")

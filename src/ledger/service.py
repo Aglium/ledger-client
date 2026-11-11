@@ -85,7 +85,15 @@ def build_adapters(cfg: Config, local_root: str | None, *, warn=None) -> list[Vc
         # developer's uncommitted work stays visible, and they are the same
         # repositories. The mirrors supply everything nobody checked out.
         roots = [Path(cfg.local_root).expanduser()] if cfg.local_root else []
-        return [LocalGitAdapter([*roots, mirrors])]
+        # Open pull requests are the one thing a mirror cannot hold: they come
+        # from the forges, when there are credentials for them. Without, the
+        # mirrors answer as before -- branches only.
+        try:
+            pulls = forge_adapters(cfg, warn=warn)
+        except LedgerError as e:
+            warn(f"open pull requests not read: {e}")
+            pulls = []
+        return [LocalGitAdapter([*roots, mirrors], pulls_from=pulls)]
     if cfg.local_root:
         return [LocalGitAdapter(cfg.local_root)]
     out: list[VcsAdapter] = []

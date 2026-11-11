@@ -151,6 +151,18 @@ class TestWhereTheEstateComesFrom:
         assert service.build_adapters(cfg, None)[0].roots == [tmp_path / "clones",
                                                               tmp_path / "mirrors"]
 
+    def test_mirrors_read_open_pull_requests_from_the_forges(self, tmp_path, monkeypatch):
+        """Git has no pull-request state; with forge credentials the mirrors
+        ask the forge for that one list."""
+        from ledger import service
+        from ledger.adapters.vcs.github import GitHubAdapter
+        (tmp_path / "mirrors").mkdir()
+        monkeypatch.setenv("GH_TOKEN_TEST", "t")
+        cfg = self.cfg(tmp_path, f"mirror_root: {tmp_path}/mirrors\n"
+                                 "forges:\n  - kind: github\n    namespace: Acme\n    token_env: GH_TOKEN_TEST\n")
+        got = service.build_adapters(cfg, None)
+        assert len(got) == 1 and [type(f) for f in got[0]._pulls_from] == [GitHubAdapter]
+
     def test_an_explicit_local_root_still_wins(self, tmp_path):
         from ledger import service
         (tmp_path / "mirrors").mkdir()

@@ -15,7 +15,7 @@ tools is not given your code through them.
 
 | Destination | When | With what |
 |---|---|---|
-| `api.github.com` or `api.bitbucket.org` | Listing your organisation's repositories (`mirrors`, `coverage --forge`) and posting pull request comments (`comment --post`) | `LEDGER_GITHUB_TOKEN` or the Bitbucket variables, or the credential git's helper already holds |
+| `api.github.com` or `api.bitbucket.org` | Listing your organisation's repositories (`mirrors`, `coverage --forge`), listing open pull requests when reading from mirrors (one call per repository, reused for 15 minutes), and posting pull request comments (`comment --post`) | `LEDGER_GITHUB_TOKEN` or the Bitbucket variables, or the credential git's helper already holds |
 | Your forge over git | Cloning and fetching mirrors (`mirrors`) | The credential git already uses |
 | Your organisation's Ledger server | Only when `LEDGER_URL` is set | `LEDGER_API_TOKEN`. It receives the repository, branch and question, and your local change when the server cannot see it |
 | The Python package index | When the plugin fetches the client with `uvx`, the first time | Nothing of yours |
