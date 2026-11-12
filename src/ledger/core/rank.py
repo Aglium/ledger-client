@@ -60,6 +60,11 @@ _NO_SHARED_NAME = "Ledger found no topic, route or table named by both diffs"
 #: brief only because that repository publishes a topic the change uses.
 _BY_REPOSITORY = "its repository "
 
+#: How an open change in the subject's own repository that changes the same
+#: files is introduced (`service._same_repo_work`). Whichever lands second
+#: has to be read against the first: content, like a relation.
+SAME_FILES = "open in this repository and also changes "
+
 
 @dataclass
 class Item:
@@ -74,7 +79,8 @@ class Item:
     #: (same author, pushed together), "diff_ticket" (a ticket key this diff
     #: names), "ticket" (a ticket key in both branch names), "integration"
     #: (an unreleased commit on an integration branch), "signal" (both diffs
-    #: change something rare), "words", or "".
+    #: change something rare), "same_files" (open in this same repository,
+    #: changing the same files), "words", or "".
     link: str = ""
     author: str | None = None
     #: The contract both sides name, when there is one.
@@ -139,6 +145,8 @@ def strength(it: Item) -> int:
             return _promoted(it)
         if it.link == "author":
             return 5
+        if it.link == "same_files":
+            return 4
         if it.link == "signal":
             # Both diffs change topics, tables or migrations little else
             # touches: content, like a relation, but without a direction.
@@ -292,6 +300,8 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
             link = "relation"
         elif how.startswith("same author"):
             link = "author"
+        elif how.startswith(SAME_FILES):
+            link = "same_files"
         elif "which this diff names" in how:
             link = "diff_ticket"
         elif "which little else touches" in how:

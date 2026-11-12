@@ -126,3 +126,31 @@ def find_siblings(
 
     result.siblings.sort(key=lambda s: (s.change.repo, s.change.ref))
     return result
+
+
+def collapse_integration(result: JoinResult) -> tuple[JoinResult, dict[tuple[str, str], tuple[int, str]]]:
+    """One item per repository, integration branch and shared tickets.
+
+    A ticket that is an epic has a hundred merges on `stage`, and listing them
+    one by one buried everything else: a brief listed 104 commits of one
+    repository under one key. Kept: the most recent merge of each group, and
+    `{(repo, ref): (merges, integration branch)}` for the ones that stand for
+    more than themselves.
+    """
+    import dataclasses
+    groups: dict[tuple, list[Sibling]] = {}
+    out: list[Sibling] = []
+    for s in result.siblings:
+        if s.change.kind != "integration" or not s.shared_tickets:
+            out.append(s)
+            continue
+        groups.setdefault((s.change.repo, s.change.integration_ref, s.shared_tickets), []).append(s)
+    counts: dict[tuple[str, str], tuple[int, str]] = {}
+    for (repo, where, _t), group in groups.items():
+        group.sort(key=lambda x: x.change.updated_at.timestamp() if x.change.updated_at else 0,
+                   reverse=True)
+        out.append(group[0])
+        if len(group) > 1:
+            counts[(repo, group[0].change.ref)] = (len(group), where or "")
+    out.sort(key=lambda x: (x.change.repo, x.change.ref))
+    return dataclasses.replace(result, siblings=out), counts

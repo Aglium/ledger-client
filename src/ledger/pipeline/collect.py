@@ -162,12 +162,20 @@ def collect(
                             out.branches_ignored += 1
                             ignored_heads.add(p.head_ref)
                             continue
-                    # The branch name, the PR title and the description all
-                    # carry ticket ids, and they disagree often enough to be
-                    # worth unioning. The description is free: both forges
-                    # return it in the same call that fetched the rest.
-                    tickets = extract_tickets(
-                        f"{p.head_ref} {p.title} {p.body}", project_keys)
+                    # The branch name, the title and the pull request's own
+                    # commits say what it is under. The description does not:
+                    # it cites. Real: "SK-1143 row P8" was a QA row reference
+                    # and led a brief with an unrelated SK-1143 merge, and an
+                    # epic named in one description listed 104 commits of
+                    # another repository. A description ticket links nothing
+                    # by itself; shared files, contracts and names still do.
+                    tickets = sorted(set(extract_tickets(f"{p.head_ref} {p.title}", project_keys))
+                                     | (_commit_tickets(
+                                         adapter, repo.full_name, repo.default_branch, p.head_ref,
+                                         project_keys,
+                                         exclude=tuple(x for x in integ_here
+                                                       if x != p.head_ref and x != repo.default_branch))
+                                        if not p.fork else set()))
                     out.changes.append(
                         Change(
                             repo=repo.full_name, ref=p.head_ref, tickets=tuple(tickets),

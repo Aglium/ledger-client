@@ -221,16 +221,24 @@ class TestTheTicketTheBranchNameDoesNotCarry:
 
 
 class TestThePullRequestDescription:
-    """Both forges return it in the same call that fetched everything else, so
-    reading it is free."""
+    """A description cites; it does not say what the pull request is under.
+    Real: "SK-1143 row P8" was a QA row and led a brief with an unrelated
+    SK-1143 merge; an epic named in a description listed 104 commits of
+    another repository. The name, the title and the commits still count."""
 
-    def test_a_ticket_only_in_the_description_links_the_pull_request(self):
+    def collect(self, *, title, body):
         from ledger.adapters.vcs.fake import FakeAdapter
         vcs = FakeAdapter(
             repos=[RepoRef(full_name="leads", default_branch="main", host="fake")],
             branches={"leads": [BranchRef(repo="leads", name="main", head_sha="a" * 40)]},
-            pulls={"leads": [PullRef(repo="leads", number=7, title="announce on crm link",
+            pulls={"leads": [PullRef(repo="leads", number=7, title=title,
                                      head_ref="announce", base_ref="main", head_sha="b" * 40,
-                                     body="part of XY-525, producer half")]})
+                                     body=body)]})
         got = collect([vcs], ("XY",))
-        assert set(next(c for c in got.changes if c.ref == "announce").tickets) == {"XY-525"}
+        return set(next(c for c in got.changes if c.ref == "announce").tickets)
+
+    def test_a_ticket_only_in_the_description_links_nothing(self):
+        assert self.collect(title="announce on crm link", body="part of XY-525, producer half") == set()
+
+    def test_the_title_still_does(self):
+        assert self.collect(title="XY-525 announce on crm link", body="see XY-1 row P8") == {"XY-525"}

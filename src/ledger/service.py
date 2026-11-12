@@ -411,6 +411,7 @@ class Index(Protocol):
     def siblings_by_tickets(self, tickets, *, exclude_repo=None): ...
     def siblings_near(self, *, author, at, ref="", exclude_repo=None): ...
     def siblings_by_signal(self, signals, *, exclude_repo=None): ...
+    def open_in_repo(self, repo: str) -> list: ...
     def behaviours(self, commits) -> dict: ...
     def topics_bound_in(self, repo: str) -> dict: ...
     def channel_peers(self, topics) -> dict: ...
@@ -609,6 +610,12 @@ class LiveIndex:
         ok = cfg.is_change_branch if cfg is not None else DEFAULT_RULES.allows
         self._population = [c for c in changes if c.kind != "integration" and ok(c.ref)]
         self._cfg = cfg
+
+    def open_in_repo(self, repo: str) -> list[Change]:
+        """Somebody's own open work in this repository, newest first."""
+        got = [c for c in self._population if c.repo == repo]
+        got.sort(key=lambda c: c.updated_at.timestamp() if c.updated_at else 0, reverse=True)
+        return got
 
     def _others(self, exclude_repo: str | None) -> list[Change]:
         got = [c for c in self._population if c.repo != exclude_repo]
@@ -1120,6 +1127,8 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                                 contracts=bb.contracts)
         return bb, idle
 
+    from ledger.core.join import collapse_integration
+    result, merges = collapse_integration(result)
     b, idle = assemble(result, set())
     if idle:
         # Branches with nothing of their own beyond their base. Built again
@@ -1129,6 +1138,13 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         trimmed = dataclasses.replace(result, siblings=[
             s for s in result.siblings if (s.change.repo, s.change.ref) not in idle])
         b, _ = assemble(trimmed, idle)
+    _same_repo_work(b, cfg, vcs, index, repo, ref, subj, result, shipped if mine_read else None,
+                    yours=yours)
+    for i in b.impacts:
+        if (i.repo, i.ref) in merges and i.how is None:
+            n, where = merges[(i.repo, i.ref)]
+            i.how = (f"the most recent of {n} merges into `{where}` under "
+                     f"{', '.join(i.shared_tickets)}; the others are the same work and not listed")
     _escalate_opposite_moves(b)
     # A topic name removed from code may only be a default: if deployment config
     # binds the same identifier to another name, the running topic may not
@@ -1414,6 +1430,85 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
         b.confidence = "low"
         b.reasons.insert(0, f"{len(found)} change(s) in other repo(s) are linked to this one by "
                             "something other than the branch name — see below for what")
+
+#: Files two changes both touching says nothing about: dependency locks,
+#: changelogs, READMEs. Every second branch edits them.
+_SHARED_NOISE = re.compile(
+    r"(^|/)(changelog|readme|changes)[^/]*$|\.lock$|(^|/)(package-lock\.json|pnpm-lock\.yaml|"
+    r"yarn\.lock|composer\.lock|poetry\.lock|uv\.lock|go\.sum)$|(^|/)\.github/", re.I)
+
+#: Open changes in the subject's repository compared, newest first. Each costs a
+#: `--name-only` diff on a mirror; a forge would read whole diffs, so fewer there.
+SAME_REPO_CAP = 60
+SAME_REPO_CAP_FORGE = 10
+
+
+def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str, subj,
+                    result, mine, *, yours) -> None:
+    """Open work in this same repository that changes the same files.
+
+    The rest of the brief is about repositories the reviewer is not looking
+    at, and this used to be excluded on the grounds that a repository's own
+    pull requests are in its own list. On a real week all six `missed`
+    verdicts were this: an open pull request changing the same
+    `AutomatedDocumentService.php` under the same ticket, absent from a brief
+    that said `proceed` at high confidence. A list of forty open pull
+    requests does not say which one touches your file.
+
+    A shared file makes an item. A shared ticket with no shared file is a
+    line of context, never an item: the ticket is not evidence of overlap.
+    """
+    from ledger.core.estate import is_test_path
+    from ledger.core.rank import SAME_FILES
+    finder = getattr(index, "open_in_repo", None)
+    if mine is None or finder is None:
+        return
+    mine_paths = {f.path for f in mine if not _SHARED_NOISE.search(f.path)}
+    if not mine_paths:
+        return
+    from ledger.adapters.vcs.base import VcsAdapter as _Base
+    cap = SAME_REPO_CAP if type(vcs).changed_paths is not _Base.changed_paths else SAME_REPO_CAP_FORGE
+    subject_tickets = set(getattr(result.subject, "tickets", ()) or ())
+    known = {(i.repo, i.ref) for i in b.impacts}
+    found, ticket_only = [], []
+    for c in finder(repo)[:cap]:
+        if c.ref == ref or c.kind == "integration" or (c.repo, c.ref) in known:
+            continue
+        if not cfg.is_change_branch(c.ref):
+            continue
+        try:
+            theirs = set(vcs.changed_paths(repo, subj.base, c.ref))
+        except ForgeUnavailable:
+            continue
+        shared = sorted(p for p in mine_paths & theirs if not is_test_path(p))
+        tickets = sorted(subject_tickets & set(c.tickets))
+        if shared:
+            found.append((c, shared, tickets))
+        elif tickets:
+            ticket_only.append((c, tickets))
+    for c, shared, tickets in found[:4]:
+        names = ", ".join(f"`{p.rsplit('/', 1)[-1]}`" for p in shared[:3])
+        more = f" and {len(shared) - 3} more" if len(shared) > 3 else ""
+        b.impacts.append(Impact(
+            repo=c.repo, ref=c.ref, kind=c.kind, author=c.author, shared_tickets=tickets,
+            sha=(c.sha or "")[:12] or None,
+            how=(f"{SAME_FILES}{names}{more}"
+                 + (f", under {', '.join(tickets)}" if tickets else "")
+                 + "; whichever lands second has to be read against the first")))
+    if found:
+        describe_impacts(b.impacts[-len(found[:4]):], cfg, vcs, subj.repos, index, yours=yours,
+                         your_files=mine, contracts=b.contracts)
+        if b.recommendation in _QUIET:
+            b.recommendation = Recommendation.REVIEW_WITH.value
+            b.confidence = "medium"
+        b.reasons.insert(0, f"{len(found)} open change(s) in this repository change the same "
+                            "file(s) — see below")
+    if ticket_only:
+        b.reasons.append(
+            "note: open in this repository under the same ticket, changing none of the same "
+            "files: " + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
+                                 for c, _ in ticket_only[:5]))
+
 
 def _escalate_opposite_moves(b: ImpactBrief) -> None:
     """Two changes in flight that cannot both land as they are need a decision.
