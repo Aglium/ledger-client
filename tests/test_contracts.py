@@ -345,3 +345,28 @@ class TestTheBriefNamesTheRouteTheIndexStores:
                  ChangedFile(path="app/models.py", body="+x = 1")]
         got = _route_prefixes(LocalGitAdapter(str(tmp_path)), "loms", "main", files, None)
         assert got == {"app/investor/router.py": {"router": "/api/v1/investor"}}
+
+
+class TestMountsBeyondTheCap:
+    """The file that mounts a router is read for its prefix however many files
+    are in the tree, and whether or not it is in it."""
+
+    def files(self):
+        f = dict(TestMountedPrefix.FILES)
+        f.update({f"app/filler/f{i:03}.py": "x = 1\n" for i in range(450)})
+        return f
+
+    def routes(self, tree, mounts):
+        from ledger.core.contracts import discover
+        files = self.files()
+        d = discover("loms", tree, None, read_many=lambda ps: {p: files[p] for p in ps if p in files},
+                     mounts=mounts)
+        return sorted(e.contract.name for e in d.edges if e.contract.surface.value == "http")
+
+    def test_a_mount_file_past_the_cap(self):
+        tree = ["app/investor/router.py"] + [f"app/filler/f{i:03}.py" for i in range(450)] + ["app/routers.py"]
+        assert self.routes(tree, None) == ["/claims"]
+        assert self.routes(tree, ["app/routers.py", "app/main.py"]) == ["/api/v1/investor/claims"]
+
+    def test_a_mount_file_the_change_did_not_touch(self):
+        assert self.routes(["app/investor/router.py"], ["app/routers.py"]) == ["/api/v1/investor/claims"]

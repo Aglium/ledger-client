@@ -56,7 +56,7 @@ class ContractEdge:
 #: Bump whenever a change here alters what discover() returns. The stored index
 #: keys on it: rows written by an older extractor are treated as stale and read
 #: live until the next sync rescans them, so an upgrade never serves old answers.
-EXTRACTOR_VERSION = "9"
+EXTRACTOR_VERSION = "10"
 
 # A dotted, lowercase literal is how most brokers name a topic.
 _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]")
@@ -622,12 +622,18 @@ def _drop_noise(edges: list[ContractEdge], modules: set[str]) -> list[ContractEd
 
 def discover(
     repo: str, tree: list[str], read, *, max_files: int = 400, per_file_limit: int = 200_000,
-    read_many=None,
+    read_many=None, mounts: list[str] | None = None,
 ) -> Discovery:
     """Walk a repo's tree and collect every contract edge it can prove.
 
     `read_many(paths) -> {path: text}` is used when given, so an adapter that
     can batch reads does the whole repo in one round trip.
+
+    `mounts`: files that mount routers (`include_router`, `register_blueprint`),
+    read for their prefixes whatever the cap on `tree` and whether or not they
+    are in it. Real: the file mounting `/investor` was the 486th of 537 files
+    an integration branch changed, past the 400 read, so its routes were
+    stored without the prefix.
     """
     d = Discovery()
     wanted = [p for p in tree if not _SKIP_PATH.search(p) and _READ_EXT.search(p)][:max_files]
@@ -640,7 +646,21 @@ def discover(
                 texts[path] = read(path)
             except Exception:
                 continue
-    mounted = mounted_prefixes({p: t for p, t in texts.items() if t and len(t) <= per_file_limit})
+    extra = [p for p in (mounts or []) if p not in texts and _READ_EXT.search(p)]
+    if extra:
+        if read_many is not None:
+            got = read_many(extra)
+        else:
+            got = {}
+            for path in extra:
+                try:
+                    got[path] = read(path)
+                except Exception:
+                    continue
+        mount_texts = {**{p: t for p, t in got.items() if t}, **texts}
+    else:
+        mount_texts = texts
+    mounted = mounted_prefixes({p: t for p, t in mount_texts.items() if t and len(t) <= per_file_limit})
     for path in wanted:
         text = texts.get(path)
         if not text or len(text) > per_file_limit:

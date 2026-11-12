@@ -43,9 +43,24 @@ EVIDENCE_PATHS = 5
 def scan_repo(vcs: VcsAdapter, repo: str, ref: str):
     """Read one repo once: its contract edges and its decisions."""
     tree = vcs.list_tree(repo, ref)
-    disc = discover(repo, tree, None, read_many=lambda ps: vcs.read_files(repo, ref, ps))
+    disc = discover(repo, tree, None, read_many=lambda ps: vcs.read_files(repo, ref, ps),
+                    mounts=mount_paths(vcs, repo, ref))
     decisions = load_repo_decisions(vcs, repo, ref, tree=tree)
     return disc, decisions
+
+
+def mount_paths(vcs: VcsAdapter, repo: str, ref: str) -> list[str]:
+    """Python files at `ref` that mount routers, for `discover(mounts=...)`.
+
+    Only where git answers the grep itself; a forge would read every file."""
+    from ledger.adapters.vcs.base import ForgeUnavailable
+    if not _greps(vcs):
+        return []
+    try:
+        return [p for p in vcs.grep_paths(repo, ref, ["include_router", "register_blueprint"])
+                if p.endswith(".py")]
+    except ForgeUnavailable:
+        return []
 
 
 def _greps(vcs: VcsAdapter) -> bool:
