@@ -530,3 +530,21 @@ class TestAStaleLocalBase:
         g = LocalGitAdapter(tmp_path / "root")
         assert g.commits_ahead("leads", "stage", "feat/x") == 1
         assert [f.path for f in g.changed_files("leads", "stage", "feat/x")] == ["mine.txt"]
+
+
+def test_bitbucket_asks_for_pull_requests_in_pages_it_accepts():
+    """Bitbucket answers 400 "Invalid pagelen" above 50 on pull requests."""
+    import respx
+
+    def strict(req):
+        n = int(req.url.params.get("pagelen", "10"))
+        if n > 50:
+            return httpx.Response(400, json={"error": {"message": "Invalid pagelen"}})
+        return httpx.Response(200, json={"values": [{
+            "id": 7, "title": "SK-1201 relay", "source": {"branch": {"name": "feat/x"}, "commit": {"hash": "a" * 12}},
+            "destination": {"branch": {"name": "master"}}, "author": {"display_name": "ann"}}], "next": None})
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get("https://api.bitbucket.org/2.0/repositories/ws/vox-relay/pullrequests").mock(side_effect=strict)
+        got = BitbucketAdapter("ws", "u", "p").list_open_pulls("ws/vox-relay")
+    assert [p.number for p in got] == [7]

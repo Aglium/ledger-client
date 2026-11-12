@@ -33,11 +33,18 @@ class BitbucketAdapter(VcsAdapter):
         self._client = client or httpx.Client(base_url=API, timeout=20.0, auth=(user, app_password))
 
     def _get(self, path: str, **params):
-        """Bitbucket paginates by `next` URL rather than page numbers."""
+        """Bitbucket paginates by `next` URL rather than page numbers.
+
+        The page size has a different ceiling per endpoint: 100 is accepted for
+        repositories and branches, while pull requests answer 400 "Invalid
+        pagelen" above 50 -- which, on a real workspace, failed the open
+        pull requests of all 74 repositories on every sync.
+        """
+        size = 50 if "/pullrequests" in path else 100
         out, url, first = [], path, True
         while url:
             try:
-                r = self._client.get(url, params={**params, "pagelen": 100} if first else None)
+                r = self._client.get(url, params={**params, "pagelen": size} if first else None)
             except httpx.HTTPError as e:
                 raise ForgeUnavailable(self.source, str(e)) from e
             if r.status_code == 429:
