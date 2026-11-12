@@ -65,6 +65,11 @@ _BY_REPOSITORY = "its repository "
 #: has to be read against the first: content, like a relation.
 SAME_FILES = "open in this repository and also changes "
 
+#: How an integration item that stands for several merges under the same
+#: tickets says so (`service.compute_brief`), followed by the count.
+MERGES = "the most recent of "
+_MERGES_N = re.compile(re.escape(MERGES) + r"(\d+) merges")
+
 
 @dataclass
 class Item:
@@ -287,9 +292,19 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
         # signal or a contract carries its own tickets in the same field;
         # those link nothing and must not count.
         how = i.get("how") or ""
-        return list(i.get("shared_tickets") or []) if (not how or "which this diff names" in how) else []
+        return (list(i.get("shared_tickets") or [])
+                if (not how or "which this diff names" in how or how.startswith(MERGES)) else [])
 
-    per_key = Counter(t for i in b.get("impacts", []) for t in set(keys_of(i)))
+    def weight(i: dict) -> int:
+        # A collapsed item is still every merge it stands for: an epic with a
+        # hundred merges must not make the one other item under it `sole`.
+        m = _MERGES_N.match(i.get("how") or "")
+        return int(m.group(1)) if m else 1
+
+    per_key: Counter = Counter()
+    for i in b.get("impacts", []):
+        for t in set(keys_of(i)):
+            per_key[t] += weight(i)
     compared = any(i.get("shares") is not None for i in b.get("impacts", []))
     for i in b.get("impacts", []):
         how, rel = i.get("how") or "", i.get("relation") or ""

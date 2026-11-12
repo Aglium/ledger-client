@@ -112,3 +112,52 @@ class TestMergesUnderOneTicket:
                          shared_tickets=("SKY-5",)) for n in "ab"]
         got, counts = collapse_integration(JoinResult(subject=subject, siblings=open_))
         assert len(got.siblings) == 2 and counts == {}
+
+
+def test_more_than_are_listed_are_named_and_counted_right(estate, tmp_path, monkeypatch):
+    cfg, vcs = estate
+    monkeypatch.setattr(service, "SAME_REPO_SHOWN", 1)
+    work = tmp_path / "work"
+    branch(work, "feat/SKY-8-also", {"app/docs.py": "def build():\n    return 4\n"})
+    subprocess.run(["git", "-C", str(tmp_path / "mirrors" / "core.git"), "fetch", "-q", str(work),
+                    "+refs/heads/*:refs/heads/*"], check=True)
+    b = brief(estate)
+    items = [i.ref for i in b.impacts if i.repo == "core"]
+    assert len(items) == 1
+    line = next(r for r in b.reasons if "open change(s) in this repository" in r)
+    assert line.startswith("1 open change(s)")
+    other = ({"feat/SKY-9-theirs", "feat/SKY-8-also"} - set(items)).pop()
+    assert f"also `{other}`" in line
+
+
+def test_the_cap_counts_only_what_was_compared(estate, monkeypatch):
+    monkeypatch.setattr(service, "SAME_REPO_CAP", 1)
+    real = service.LiveIndex.open_in_repo
+
+    def subject_first(self, repo):
+        got = real(self, repo)
+        order = ["feat/SKY-1-mine", "release/9", "feat/SKY-9-theirs"]
+        return sorted(got, key=lambda c: order.index(c.ref) if c.ref in order else 9)
+    monkeypatch.setattr(service.LiveIndex, "open_in_repo", subject_first)
+    # The subject is first and must not use the one place.
+    assert "feat/SKY-9-theirs" in {i.ref for i in brief(estate).impacts}
+
+
+def test_a_merged_item_text_is_not_given_to_an_open_branch_of_that_name():
+    from ledger.core.rank import MERGES, items_of
+    many = {"repo": "core", "ref": "feat/SKY-5-a", "kind": "integration", "where": "stage",
+            "sha": "abc", "shared_tickets": ["SKY-5"],
+            "how": f"{MERGES}100 merges into `stage` under SKY-5; the others are the same work"}
+    one = {"repo": "web", "ref": "feat/SKY-5-b", "kind": "branch", "shared_tickets": ["SKY-5"]}
+    got = {i.label: i for i in items_of({"impacts": [many, one], "ref": "feat/SKY-5-x"})}
+    assert not got["web branch `feat/SKY-5-b`"].sole
+
+
+def test_a_grep_that_times_out_loses_only_the_mounts():
+    from ledger.adapters.vcs.fake import FakeAdapter
+    from ledger.pipeline.scan import mount_paths
+
+    class Slow(FakeAdapter):
+        def grep_paths(self, repo, ref, names):
+            raise subprocess.TimeoutExpired("git grep", 60)
+    assert mount_paths(Slow(), "core", "main") == []

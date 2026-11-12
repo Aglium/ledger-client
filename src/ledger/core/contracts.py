@@ -646,7 +646,10 @@ def discover(
                 texts[path] = read(path)
             except Exception:
                 continue
-    extra = [p for p in (mounts or []) if p not in texts and _READ_EXT.search(p)]
+    # The same files `tree` would read, and no tests: a test app mounting a
+    # router bare must not decide the prefix the service serves it under.
+    extra = [p for p in (mounts or []) if p not in texts and _READ_EXT.search(p)
+             and not _SKIP_PATH.search(p) and not _TEST_FILE.search(p) and not is_test_path(p)]
     if extra:
         if read_many is not None:
             got = read_many(extra)

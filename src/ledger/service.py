@@ -1128,6 +1128,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         return bb, idle
 
     from ledger.core.join import collapse_integration
+    from ledger.core.rank import MERGES
     result, merges = collapse_integration(result)
     b, idle = assemble(result, set())
     if idle:
@@ -1141,9 +1142,9 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     _same_repo_work(b, cfg, vcs, index, repo, ref, subj, result, shipped if mine_read else None,
                     yours=yours)
     for i in b.impacts:
-        if (i.repo, i.ref) in merges and i.how is None:
+        if i.kind == "integration" and (i.repo, i.ref) in merges and i.how is None:
             n, where = merges[(i.repo, i.ref)]
-            i.how = (f"the most recent of {n} merges into `{where}` under "
+            i.how = (f"{MERGES}{n} merges into `{where}` under "
                      f"{', '.join(i.shared_tickets)}; the others are the same work and not listed")
     _escalate_opposite_moves(b)
     # A topic name removed from code may only be a default: if deployment config
@@ -1441,6 +1442,8 @@ _SHARED_NOISE = re.compile(
 #: `--name-only` diff on a mirror; a forge would read whole diffs, so fewer there.
 SAME_REPO_CAP = 60
 SAME_REPO_CAP_FORGE = 10
+#: Of those that change the same files, how many become items; the rest are named.
+SAME_REPO_SHOWN = 4
 
 
 def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str, subj,
@@ -1451,7 +1454,7 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     at, and this used to be excluded on the grounds that a repository's own
     pull requests are in its own list. On a real week all six `missed`
     verdicts were this: an open pull request changing the same
-    `AutomatedDocumentService.php` under the same ticket, absent from a brief
+    service file under the same ticket, absent from a brief
     that said `proceed` at high confidence. A list of forty open pull
     requests does not say which one touches your file.
 
@@ -1471,11 +1474,17 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     subject_tickets = set(getattr(result.subject, "tickets", ()) or ())
     known = {(i.repo, i.ref) for i in b.impacts}
     found, ticket_only = [], []
-    for c in finder(repo)[:cap]:
+    compared = 0
+    for c in finder(repo):
+        # The cap counts diffs read, not rows: the subject, integration
+        # branches and items already listed must not use up its places.
+        if compared >= cap:
+            break
         if c.ref == ref or c.kind == "integration" or (c.repo, c.ref) in known:
             continue
         if not cfg.is_change_branch(c.ref):
             continue
+        compared += 1
         try:
             theirs = set(vcs.changed_paths(repo, subj.base, c.ref))
         except ForgeUnavailable:
@@ -1486,23 +1495,32 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             found.append((c, shared, tickets))
         elif tickets:
             ticket_only.append((c, tickets))
-    for c, shared, tickets in found[:4]:
+    added: list[Impact] = []
+    for c, shared, tickets in found[:SAME_REPO_SHOWN]:
         names = ", ".join(f"`{p.rsplit('/', 1)[-1]}`" for p in shared[:3])
         more = f" and {len(shared) - 3} more" if len(shared) > 3 else ""
-        b.impacts.append(Impact(
+        added.append(Impact(
             repo=c.repo, ref=c.ref, kind=c.kind, author=c.author, shared_tickets=tickets,
             sha=(c.sha or "")[:12] or None,
             how=(f"{SAME_FILES}{names}{more}"
                  + (f", under {', '.join(tickets)}" if tickets else "")
                  + "; whichever lands second has to be read against the first")))
-    if found:
-        describe_impacts(b.impacts[-len(found[:4]):], cfg, vcs, subj.repos, index, yours=yours,
+    if added:
+        # Drops, in place, branches with nothing of their own beyond their
+        # base: they overlap nothing that could land.
+        describe_impacts(added, cfg, vcs, subj.repos, index, yours=yours,
                          your_files=mine, contracts=b.contracts)
+    if added:
+        b.impacts.extend(added)
         if b.recommendation in _QUIET:
             b.recommendation = Recommendation.REVIEW_WITH.value
             b.confidence = "medium"
-        b.reasons.insert(0, f"{len(found)} open change(s) in this repository change the same "
-                            "file(s) — see below")
+        unlisted = [c for c, _s, _t in found[SAME_REPO_SHOWN:]]
+        b.reasons.insert(0, f"{len(added)} open change(s) in this repository change the same "
+                            "file(s) — see below"
+                         + (f"; also {', '.join(f'`{c.ref}`' for c in unlisted[:5])}"
+                            + (f" and {len(unlisted) - 5} more" if len(unlisted) > 5 else "")
+                            if unlisted else ""))
     if ticket_only:
         b.reasons.append(
             "note: open in this repository under the same ticket, changing none of the same "

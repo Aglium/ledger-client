@@ -308,7 +308,7 @@ class TestMountedPrefix:
 
     def test_discover_stores_the_full_route(self):
         from ledger.core.contracts import discover
-        d = discover("loms", list(self.FILES), None, read_many=lambda ps: {p: self.FILES[p] for p in ps})
+        d = discover("orders", list(self.FILES), None, read_many=lambda ps: {p: self.FILES[p] for p in ps})
         routes = sorted(e.contract.name for e in d.edges if e.contract.surface.value == "http")
         assert routes == ["/api/v1/crm/claims", "/api/v1/investor/claims"]
 
@@ -317,7 +317,7 @@ class TestMountedPrefix:
         from ledger.core.contracts import discover_in_text, mounted_prefixes
         routers = mounted_prefixes(self.FILES)["app/investor/router.py"]
         body = '@@ -4,0 +5,2 @@\n+@router.get("/claims")\n+def claims(): ...'
-        got = [e.contract.name for e in discover_in_text("loms", "app/investor/router.py", body, routers=routers)]
+        got = [e.contract.name for e in discover_in_text("orders", "app/investor/router.py", body, routers=routers)]
         assert got == ["/api/v1/investor/claims"]
 
     def test_an_unresolvable_mount_changes_nothing(self):
@@ -333,7 +333,7 @@ class TestTheBriefNamesTheRouteTheIndexStores:
         from ledger.adapters.vcs.base import ChangedFile
         from ledger.adapters.vcs.localgit import LocalGitAdapter
         from ledger.service import _route_prefixes
-        repo = tmp_path / "loms"
+        repo = tmp_path / "orders"
         for path, text in TestMountedPrefix.FILES.items():
             (repo / path).parent.mkdir(parents=True, exist_ok=True)
             (repo / path).write_text(text)
@@ -343,7 +343,7 @@ class TestTheBriefNamesTheRouteTheIndexStores:
             subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, env=env)
         files = [ChangedFile(path="app/investor/router.py", body='+@router.get("/claims")'),
                  ChangedFile(path="app/models.py", body="+x = 1")]
-        got = _route_prefixes(LocalGitAdapter(str(tmp_path)), "loms", "main", files, None)
+        got = _route_prefixes(LocalGitAdapter(str(tmp_path)), "orders", "main", files, None)
         assert got == {"app/investor/router.py": {"router": "/api/v1/investor"}}
 
 
@@ -359,7 +359,7 @@ class TestMountsBeyondTheCap:
     def routes(self, tree, mounts):
         from ledger.core.contracts import discover
         files = self.files()
-        d = discover("loms", tree, None, read_many=lambda ps: {p: files[p] for p in ps if p in files},
+        d = discover("orders", tree, None, read_many=lambda ps: {p: files[p] for p in ps if p in files},
                      mounts=mounts)
         return sorted(e.contract.name for e in d.edges if e.contract.surface.value == "http")
 
@@ -370,3 +370,11 @@ class TestMountsBeyondTheCap:
 
     def test_a_mount_file_the_change_did_not_touch(self):
         assert self.routes(["app/investor/router.py"], ["app/routers.py"]) == ["/api/v1/investor/claims"]
+
+    def test_a_test_app_mounting_it_bare_does_not_decide(self, monkeypatch):
+        bare = ("from fastapi import FastAPI\nfrom app.investor.router import router\n"
+                "app = FastAPI()\napp.include_router(router)\n")
+        monkeypatch.setattr(self, "files", lambda: {**TestMountedPrefix.FILES, "app/aa/test_app.py": bare})
+        got = self.routes(["app/investor/router.py"],
+                          ["app/aa/test_app.py", "app/routers.py", "app/main.py"])
+        assert got == ["/api/v1/investor/claims"]

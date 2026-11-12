@@ -18,6 +18,8 @@ organisation server is for.
 
 from __future__ import annotations
 
+import subprocess
+
 import dataclasses
 import hashlib
 import json
@@ -59,7 +61,9 @@ def mount_paths(vcs: VcsAdapter, repo: str, ref: str) -> list[str]:
     try:
         return [p for p in vcs.grep_paths(repo, ref, ["include_router", "register_blueprint"])
                 if p.endswith(".py")]
-    except ForgeUnavailable:
+    except (ForgeUnavailable, subprocess.SubprocessError, OSError):
+        # A grep that times out on a large repository loses the mount
+        # prefixes, not the repository's whole scan.
         return []
 
 

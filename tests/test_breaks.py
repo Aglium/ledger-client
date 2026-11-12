@@ -293,7 +293,7 @@ class TestMovedNotRemoved:
         assert not moved_binding(line, "invoice.events.v1", lambda ident: after.get(ident, set()))
 
 
-class TestForgeworldFalseBreaks:
+class TestFalseFieldBreaks:
     """Two false decision_needed from a real estate, and their causes."""
 
     def test_a_field_moved_to_another_file_of_the_change_is_not_removed(self):
