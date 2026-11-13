@@ -178,3 +178,18 @@ def test_a_port_is_read_against_what_it_is_cut_from(estate, tmp_path):
                     "+refs/heads/*:refs/heads/*"], check=True)
     refs = {i.ref for i in brief(estate).impacts if i.repo == "core"}
     assert "feat/SKY-6-port" not in refs and "feat/SKY-9-theirs" in refs
+
+
+def test_a_stored_answer_lists_each_change_once_and_notes_only_changes(estate, monkeypatch):
+    """Stored matches and not-yet-read rows can name the same change; and the
+    same-ticket note follows the same rules as the live path."""
+    def stored(self, repo, paths, *, exclude_ref=""):
+        everything = {c.ref: c for c in self.open_in_repo(repo)}
+        theirs = everything["feat/SKY-9-theirs"]
+        return [(theirs, ["app/docs.py"])], [theirs]
+    monkeypatch.setattr(service.LiveIndex, "same_files_in_repo", stored, raising=False)
+    monkeypatch.setattr(service.Config, "is_change_branch",
+                        lambda self, r: r != "feat/SKY-1-elsewhere", raising=False)
+    b = brief(estate)
+    assert [i.ref for i in b.impacts if i.repo == "core"].count("feat/SKY-9-theirs") == 1
+    assert not any("feat/SKY-1-elsewhere" in r for r in b.reasons)

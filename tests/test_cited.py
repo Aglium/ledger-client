@@ -82,3 +82,16 @@ def test_stored_contracts_keep_their_direction():
     edge, c = contract_of("publishes:http:/v1/x/:id")
     assert edge.value == "publishes" and c.name == "/v1/x/:id"
     assert paths_of(PRODUCER) == {"app/events.py"}
+
+
+def test_two_publishers_of_one_topic_are_not_linked_by_it(tmp_path, monkeypatch):
+    """Without a server the rule is the stored index's: the other end only."""
+    monkeypatch.setenv("LEDGER_CACHE_DIR", "off")
+    pub = [ChangedFile(path="app/bus.py", body="+    producer.send('order.placed.v1', x)\n")]
+    sub = [ChangedFile(path="app/on.py", body="+@consumer.subscribe('order.placed.v1')\n")]
+    for theirs, linked in ((pub, False), (sub, True)):
+        cfg, vcs = estate(tmp_path, theirs, body="")
+        vcs._diffs["core"] = pub
+        b = brief(cfg, vcs)
+        got = [i for i in b.impacts if i.repo == "comms" and (i.how or "").startswith("its diff also names")]
+        assert bool(got) is linked
