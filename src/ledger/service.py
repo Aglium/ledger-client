@@ -1485,8 +1485,16 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         if not cfg.is_change_branch(c.ref):
             continue
         compared += 1
+        # Its own diff, against what it is built on, never against the
+        # subject's base: a port cut from `stage` read against `master`
+        # "changed" 854 files and 8 of its own, and was listed against
+        # changes none of its 8 touch.
         try:
-            theirs = set(vcs.changed_paths(repo, subj.base, c.ref))
+            base = c.base_ref or (_impact_base(cfg, vcs, subj.repos, repo, c.ref, c.kind, c.sha)
+                                  or (None,))[0]
+            if base is None:
+                continue
+            theirs = set(vcs.changed_paths(repo, base, c.ref))
         except ForgeUnavailable:
             continue
         shared = sorted(p for p in mine_paths & theirs if not is_test_path(p))

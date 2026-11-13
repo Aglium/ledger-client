@@ -76,6 +76,9 @@ def test_an_old_branch_with_an_open_pull_request_is_in_flight(mirrors):
                   now=datetime(2026, 11, 11, tzinfo=timezone.utc))
     prs = [c for c in got.changes if c.kind == "pr"]
     assert [(c.repo, c.ref, c.pr_number, c.tickets) for c in prs] == [("core", "feat/settle", 8462, ("SKY-8638",))]
+    # Who pushed the head and when, as for a branch; and where it merges.
+    assert prs[0].author == "ann@example.com" and prs[0].base_ref == "main"
+    assert prs[0].updated_at == datetime.fromisoformat(OLD)
 
 
 def test_without_a_forge_it_is_branches_only_as_before(mirrors):

@@ -148,6 +148,8 @@ def collect(
                 repo_degraded = True
                 failed(e)
             integ_here = expand_integration(integration_branches, [b.name for b in live])
+            heads = {b.name: b for b in live}
+            all_heads: dict | None = None
             ignored_heads: set[str] = set()
 
             try:
@@ -176,11 +178,30 @@ def collect(
                                          exclude=tuple(x for x in integ_here
                                                        if x != p.head_ref and x != repo.default_branch))
                                         if not p.fork else set()))
+                    # Who pushed its head and when, as for a branch: the
+                    # forge's author is a login and its time the last edit
+                    # of the pull request (a comment, a label), so a service
+                    # and its front end pushed a minute apart by one person
+                    # were a day apart and two people. Where the head is not
+                    # among the live branches, the forge's answer stands.
+                    head = heads.get(p.head_ref) if not p.fork else None
+                    if head is None and not p.fork and adapter.source == "localgit":
+                        # An old head is outside the liveness window. On git
+                        # all refs are one cheap read, once per repository.
+                        if all_heads is None:
+                            try:
+                                all_heads = {b.name: b for b in adapter.list_branches(repo.full_name)}
+                            except ForgeUnavailable:
+                                all_heads = {}
+                        head = all_heads.get(p.head_ref)
                     out.changes.append(
                         Change(
                             repo=repo.full_name, ref=p.head_ref, tickets=tuple(tickets),
-                            kind="pr", pr_number=p.number, title=p.title, author=p.author,
-                            url=p.url, updated_at=p.updated_at, open=True, sha=p.head_sha,
+                            kind="pr", pr_number=p.number, title=p.title,
+                            author=(head.author if head and head.author else p.author),
+                            url=p.url,
+                            updated_at=(head.updated_at if head and head.updated_at else p.updated_at),
+                            open=True, sha=p.head_sha, base_ref=p.base_ref or None,
                         )
                     )
             except ForgeUnavailable as e:

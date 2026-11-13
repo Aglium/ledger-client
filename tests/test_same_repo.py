@@ -161,3 +161,20 @@ def test_a_grep_that_times_out_loses_only_the_mounts():
         def grep_paths(self, repo, ref, names):
             raise subprocess.TimeoutExpired("git grep", 60)
     assert mount_paths(Slow(), "core", "main") == []
+
+
+def test_a_port_is_read_against_what_it_is_cut_from(estate, tmp_path):
+    """A branch cut from `stage` read against `main` carries all of `stage`."""
+    work = tmp_path / "work"
+    git(work, "checkout", "-qb", "stage", "main")
+    (work / "app" / "docs.py").write_text("def build():\n    return 5\n")
+    git(work, "commit", "-qam", "on stage")
+    git(work, "checkout", "-qb", "feat/SKY-6-port", "stage")
+    (work / "app" / "port.py").write_text("y = 1\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "port")
+    git(work, "checkout", "-q", "main")
+    subprocess.run(["git", "-C", str(tmp_path / "mirrors" / "core.git"), "fetch", "-q", str(work),
+                    "+refs/heads/*:refs/heads/*"], check=True)
+    refs = {i.ref for i in brief(estate).impacts if i.repo == "core"}
+    assert "feat/SKY-6-port" not in refs and "feat/SKY-9-theirs" in refs

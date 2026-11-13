@@ -30,6 +30,11 @@ class Change:
     url: str | None = None
     updated_at: datetime | None = None
     open: bool = True
+    #: For kind="pr": the branch it is to merge into. What its own diff is
+    #: read against -- a pull request into `stage`, or stacked on another
+    #: pull request's branch, read against `master` is credited with
+    #: everything between the two.
+    base_ref: str | None = None
 
 
 @dataclass(frozen=True)
