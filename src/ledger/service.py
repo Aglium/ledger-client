@@ -412,6 +412,9 @@ class Index(Protocol):
     def siblings_near(self, *, author, at, ref="", exclude_repo=None): ...
     def siblings_by_signal(self, signals, *, exclude_repo=None): ...
     def open_in_repo(self, repo: str) -> list: ...
+    # Optional: def same_files_in_repo(self, repo, paths, *, exclude_ref) -> (matches, unread)
+    def cited_by(self, repo: str, ref: str) -> tuple: ...
+    def siblings_citing(self, tickets, *, exclude_repo=None) -> list: ...
     def behaviours(self, commits) -> dict: ...
     def topics_bound_in(self, repo: str) -> dict: ...
     def channel_peers(self, topics) -> dict: ...
@@ -653,6 +656,21 @@ class LiveIndex:
                 for c in self._population
                 if c.repo != exclude_repo and wanted & {t.upper() for t in c.tickets}]
 
+    def cited_by(self, repo: str, ref: str) -> tuple:
+        """Tickets this change's pull request description names and nothing else does."""
+        return next((tuple(c.cited) for c in self._population
+                     if c.repo == repo and c.ref == ref and c.cited), ())
+
+    def siblings_citing(self, tickets, *, exclude_repo=None):
+        """Changes elsewhere whose pull request description names one of these tickets."""
+        wanted = {t.upper() for t in tickets}
+        if not wanted:
+            return []
+        from ledger.core.join import Sibling
+        return [Sibling(c, tuple(sorted(wanted & {t.upper() for t in c.cited})))
+                for c in self._population
+                if c.repo != exclude_repo and wanted & {t.upper() for t in c.cited}]
+
     def siblings_near(self, *, author, at, ref="", exclude_repo=None):
         """The same author's work elsewhere, started within `NEAR` of this one,
         whose branch name shares a subject word with this one.
@@ -699,7 +717,7 @@ class LiveIndex:
         out.sort(key=lambda t: -t[1])
         return out
 
-    def siblings_by_contract(self, contracts, *, exclude_repo=None):
+    def siblings_by_contract(self, contracts, *, exclude_repo=None, edges=None):
         """Changes elsewhere whose diffs name a topic or route this change touches.
 
         Tables are left out, for the reason `parties` gives.
@@ -1121,10 +1139,12 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                          integrated_in=subj.integrated_in,
                          uncommitted=[f.path for f in pending])
         _link_without_a_ticket_key(bb, index, repo, ref, diff_tickets, found, subject_signals,
-                                   touched=touched, skip=skip)
+                                   touched=touched, skip=skip, edges=yours)
+        _cited_candidates(bb, index, repo, ref, found, skip=skip)
         idle = describe_impacts(bb.impacts, cfg, vcs, subj.repos, index, yours=yours,
                                 your_files=shipped if mine_read else None,
                                 contracts=bb.contracts)
+        _keep_confirmed_citations(bb)
         return bb, idle
 
     from ledger.core.join import collapse_integration
@@ -1338,7 +1358,7 @@ _QUIET = ("proceed", "insufficient_data")
 def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
                                diff_tickets: list[str], result,
                                subject_signals: set | None = None, *,
-                               touched=(), skip=frozenset()) -> None:
+                               touched=(), skip=frozenset(), edges=None) -> None:
     """Work in another repository that the branch name could not point at.
 
     The failure this exists for, in the reviewer's words: "brief returned
@@ -1373,7 +1393,7 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
     # Another change whose diff names a topic or route this one touches: the
     # strongest link short of a ticket, because it says over what.
     by_contract = getattr(index, "siblings_by_contract", None)
-    for sib, shared in (by_contract(touched, exclude_repo=repo) if by_contract else ()):
+    for sib, shared in (by_contract(touched, exclude_repo=repo, edges=edges) if by_contract else ()):
         c = sib.change
         if (c.repo, c.ref) in known:
             continue
@@ -1432,6 +1452,70 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
         b.reasons.insert(0, f"{len(found)} change(s) in other repo(s) are linked to this one by "
                             "something other than the branch name — see below for what")
 
+#: Candidates a pull request description's ticket may bring, before the diffs
+#: are compared. An epic named in one description stood for 104 merges.
+CITED_CANDIDATES = 6
+
+
+def _cited_candidates(b: ImpactBrief, index, repo: str, ref: str, result, *,
+                      skip=frozenset()) -> None:
+    """Work elsewhere that a pull request description's ticket points at.
+
+    A description cites; it does not claim. Taken as a claim, "SK-1143 row P8"
+    led a brief with an unrelated merge and an epic in one description listed
+    104 commits. Ignored, it lost the only path between a producer and the
+    consumer reading `document.uploaded` from it. So: a candidate, in either
+    direction -- this description names their ticket, or theirs names this
+    one's -- kept only where the two diffs agree (`_keep_confirmed_citations`).
+    """
+    from ledger.core.rank import CITED
+    subject = getattr(result, "subject", None) if result is not None else None
+    cited = tuple(getattr(subject, "cited", ()) or ())
+    if not cited and hasattr(index, "cited_by"):
+        cited = tuple(index.cited_by(repo, ref))
+    mine = {t.upper() for t in (getattr(subject, "tickets", ()) or ())}
+    known = {(i.repo, i.ref) for i in b.impacts} | set(skip)
+    got: list = []
+    for sib in (index.siblings_by_tickets(cited, exclude_repo=repo) if cited else ()):
+        got.append((sib.change, list(sib.shared_tickets), "this pull request's description names"))
+    citing = getattr(index, "siblings_citing", None)
+    for sib in (citing(sorted(mine), exclude_repo=repo) if (citing and mine) else ()):
+        got.append((sib.change, list(sib.shared_tickets), "its pull request's description names"))
+    # One per repository, integration branch and ticket: the newest merge.
+    seen: dict = {}
+    for c, tickets, who in sorted(got, key=lambda x: x[0].updated_at.timestamp()
+                                  if x[0].updated_at else 0, reverse=True):
+        if (c.repo, c.ref) in known:
+            continue
+        key = (c.repo, c.integration_ref, tuple(tickets)) if c.kind == "integration" else (c.repo, c.ref)
+        seen.setdefault(key, (c, tickets, who))
+    for c, tickets, who in list(seen.values())[:CITED_CANDIDATES]:
+        b.impacts.append(Impact(
+            repo=c.repo, ref=c.ref, kind=c.kind, author=c.author, shared_tickets=tickets,
+            where=c.integration_ref, sha=c.sha,
+            how=f"{CITED}{', '.join(tickets)}: {who} it; no branch, title or commit does"))
+
+
+def _keep_confirmed_citations(b: ImpactBrief) -> None:
+    """Drop citation candidates whose diff does not meet this one's."""
+    from ledger.core.rank import CITED
+    kept, dropped = [], 0
+    for i in b.impacts:
+        if (i.how or "").startswith(CITED) and not (i.over or i.shares):
+            dropped += 1
+            continue
+        kept.append(i)
+    b.impacts[:] = kept
+    n = sum(1 for i in kept if (i.how or "").startswith(CITED))
+    if n:
+        b.reasons = [r for r in b.reasons if not r.startswith("no cross-repo work shares this ticket")]
+        if b.recommendation in _QUIET:
+            b.recommendation = Recommendation.REVIEW_WITH.value
+            b.confidence = "low"
+        b.reasons.insert(0, f"{n} change(s) elsewhere are linked by a ticket a pull request "
+                            "description names, and their diffs meet this one — see below")
+
+
 #: Files two changes both touching says nothing about: dependency locks,
 #: changelogs, READMEs. Every second branch edits them.
 _SHARED_NOISE = re.compile(
@@ -1474,8 +1558,32 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     subject_tickets = set(getattr(result.subject, "tickets", ()) or ())
     known = {(i.repo, i.ref) for i in b.impacts}
     found, ticket_only = [], []
+    # A stored index read every open change's own files at sync time: the
+    # overlap is a query over all of them, without a cap. Real: the pull
+    # request this check exists for was 127th of 128 by age and past any cap.
+    # What it has not read yet (new since the sync, or moved) is read here.
+    stored = getattr(index, "same_files_in_repo", None)
+    candidates = finder(repo)
+    if stored is not None:
+        matches, unread = stored(repo, sorted(mine_paths), exclude_ref=ref)
+        for c, shared_paths in matches:
+            if c.ref == ref or c.kind == "integration" or (c.repo, c.ref) in known:
+                continue
+            if not cfg.is_change_branch(c.ref):
+                continue
+            shared = sorted(p for p in set(shared_paths) & mine_paths if not is_test_path(p))
+            if shared:
+                found.append((c, shared, sorted(subject_tickets & set(c.tickets))))
+        read = {c.ref for c, _ in matches}
+        for c in candidates:
+            if c.ref in read or c.ref == ref:
+                continue
+            tickets = sorted(subject_tickets & set(c.tickets))
+            if tickets and c.ref not in {x.ref for x in unread}:
+                ticket_only.append((c, tickets))
+        candidates = unread
     compared = 0
-    for c in finder(repo):
+    for c in candidates:
         # The cap counts diffs read, not rows: the subject, integration
         # branches and items already listed must not use up its places.
         if compared >= cap:

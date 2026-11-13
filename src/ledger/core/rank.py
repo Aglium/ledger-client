@@ -68,6 +68,10 @@ SAME_FILES = "open in this repository and also changes "
 #: How an integration item that stands for several merges under the same
 #: tickets says so (`service.compute_brief`), followed by the count.
 MERGES = "the most recent of "
+
+#: How a link through a ticket that only a pull request description names
+#: opens (`service._cited_candidates`). Kept only where the diffs meet.
+CITED = "cites "
 _MERGES_N = re.compile(re.escape(MERGES) + r"(\d+) merges")
 
 
@@ -152,6 +156,9 @@ def strength(it: Item) -> int:
             return 5
         if it.link == "same_files":
             return 4
+        if it.link == "cited":
+            # Only ever listed with the diffs meeting (see `_cited_candidates`).
+            return 3 if (it.shares or it.names) else _promoted(it)
         if it.link == "signal":
             # Both diffs change topics, tables or migrations little else
             # touches: content, like a relation, but without a direction.
@@ -317,6 +324,8 @@ def items_of(b: dict, *, touches: dict[str, int] | None = None) -> list[Item]:
             link = "author"
         elif how.startswith(SAME_FILES):
             link = "same_files"
+        elif how.startswith(CITED):
+            link = "cited"
         elif "which this diff names" in how:
             link = "diff_ticket"
         elif "which little else touches" in how:

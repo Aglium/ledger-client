@@ -169,8 +169,9 @@ def collect(
                     # it cites. Real: "SK-1143 row P8" was a QA row reference
                     # and led a brief with an unrelated SK-1143 merge, and an
                     # epic named in one description listed 104 commits of
-                    # another repository. A description ticket links nothing
-                    # by itself; shared files, contracts and names still do.
+                    # another repository. A description ticket is kept apart
+                    # as `cited`: a candidate that links only where the two
+                    # diffs agree.
                     tickets = sorted(set(extract_tickets(f"{p.head_ref} {p.title}", project_keys))
                                      | (_commit_tickets(
                                          adapter, repo.full_name, repo.default_branch, p.head_ref,
@@ -202,6 +203,8 @@ def collect(
                             url=p.url,
                             updated_at=(head.updated_at if head and head.updated_at else p.updated_at),
                             open=True, sha=p.head_sha, base_ref=p.base_ref or None,
+                            cited=tuple(sorted(set(extract_tickets(p.body or "", project_keys))
+                                               - set(tickets))),
                         )
                     )
             except ForgeUnavailable as e:

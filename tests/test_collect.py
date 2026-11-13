@@ -235,10 +235,13 @@ class TestThePullRequestDescription:
                                      head_ref="announce", base_ref="main", head_sha="b" * 40,
                                      body=body)]})
         got = collect([vcs], ("XY",))
-        return set(next(c for c in got.changes if c.ref == "announce").tickets)
+        c = next(c for c in got.changes if c.ref == "announce")
+        return set(c.tickets), set(c.cited)
 
-    def test_a_ticket_only_in_the_description_links_nothing(self):
-        assert self.collect(title="announce on crm link", body="part of XY-525, producer half") == set()
+    def test_a_ticket_only_in_the_description_is_a_citation(self):
+        assert self.collect(title="announce on crm link", body="part of XY-525, producer half") \
+            == (set(), {"XY-525"})
 
-    def test_the_title_still_does(self):
-        assert self.collect(title="XY-525 announce on crm link", body="see XY-1 row P8") == {"XY-525"}
+    def test_the_title_still_claims_it(self):
+        assert self.collect(title="XY-525 announce on crm link", body="XY-525; see XY-1 row P8") \
+            == ({"XY-525"}, {"XY-1"})

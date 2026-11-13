@@ -38,7 +38,9 @@ from ledger.core.overlap import DiffFile, Kind, extract_signals
 #: `core.overlap`, or the diff a change is read against. Re-reading the estate
 #: costs about twenty seconds of local git and no model calls, so this is cheap
 #: to bump -- unlike the field layer, which is why they are separate versions.
-SIGNALS_VERSION = "s2"   # filenames and Helm keys are no longer topics; prose is no longer a table
+#: s3: each change read against its own base (a pull request's target, or the
+#: line a branch is cut from), and its paths and contracts stored too.
+SIGNALS_VERSION = "s3"
 
 #: Topics, tables and migrations. See the module docstring for the 536,820 to
 #: 6,620 that chose this.
@@ -71,3 +73,44 @@ def signals_of(files, *, limit: int = DIFF_LIMIT) -> set:
         diffs.append(DiffFile(path=f.path, body=body[:budget]))
         budget -= len(body)
     return {s for s in extract_signals(diffs) if s.kind in STORED_KINDS}
+
+
+#: Kinds stored beside the signals, never joined on as signals: the files a
+#: change touches (for "open in this repository and changes the same file")
+#: and the topics and routes its diff publishes or consumes (for "another
+#: change elsewhere is on the other end of this").
+PATH_KIND = "path"
+CONTRACT_KIND = "contract"
+
+
+def paths_of(files) -> set[str]:
+    """Every file one change's own diff touches."""
+    return {f.path for f in files if getattr(f, "path", None)}
+
+
+def contracts_of(repo: str, files) -> set[str]:
+    """`edge:surface:name` for each topic and route the diff publishes or
+    consumes, e.g. `consumes:topic:document.uploaded`.
+
+    Tables are left out, for the reason `LiveIndex.parties` gives; so are
+    mentions, which are a name in a log line, not an end of anything. The
+    direction is kept: two changes that both publish a topic share a
+    vocabulary, and one that consumes what the other publishes is the other
+    end of it.
+    """
+    from ledger.core.contracts import Edge, Surface
+    from ledger.core.effect import delta_of
+    d = delta_of(repo, files)
+    return {f"{e.value}:{c.surface.value}:{c.name}" for c, edges in d.contracts.items()
+            if c.surface != Surface.TABLE for e in edges - {Edge.MENTIONS}}
+
+
+def contract_of(value: str):
+    """`(Edge, ContractRef)` from a stored `edge:surface:name`, or None."""
+    from ledger.core.contracts import ContractRef, Edge, Surface
+    edge, _, rest = value.partition(":")
+    surface, _, name = rest.partition(":")
+    try:
+        return Edge(edge), ContractRef(Surface(surface), name)
+    except ValueError:
+        return None

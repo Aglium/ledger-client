@@ -35,6 +35,10 @@ class Change:
     #: pull request's branch, read against `master` is credited with
     #: everything between the two.
     base_ref: str | None = None
+    #: Tickets a pull request's description names and its branch, title and
+    #: commits do not. A citation, not a claim: it links two changes only
+    #: where their diffs agree (see `service._link_without_a_ticket_key`).
+    cited: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
