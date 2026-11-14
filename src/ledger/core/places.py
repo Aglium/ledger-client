@@ -27,7 +27,7 @@ _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 #: A line that opens a function or method: changes inside one are at one place.
 _FUNC = re.compile(
     r"\b(def|function|func|fn|fun|sub)\b"
-    r"|=>\s*[{(]?\s*$"
+    r"|\)\s*(?::\s*[\w<>\[\]|,.? ]+)?\s*=>\s*[{(]?\s*$"
     r"|^\s*(?:(?:public|private|protected|internal|static|final|abstract|async|override|"
     r"virtual|export|default)\s+)+[\w<>\[\],.? ]*\(",
 )

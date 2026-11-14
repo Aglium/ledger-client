@@ -85,3 +85,10 @@ def test_a_helm_template_name_is_not_a_topic():
     for path in ("charts/app/templates/_helpers.tpl", "charts/app/templates/deployment.yaml"):
         edges = discover_in_text("acme/api", path, text)
         assert not [e for e in edges if e.contract.name in ("app.chart", "app.fullname")], path
+
+
+def test_new_changes_are_new_people():
+    idx = index([pr("acme/web", "feat/token-a")])
+    assert idx.siblings_near(author=LAPTOP, at=NOW, ref="feat/token-b", exclude_repo="x")
+    idx.use_changes([pr("acme/web", "feat/token-a", author="else@x", login="else")])
+    assert idx.siblings_near(author=LAPTOP, at=NOW, ref="feat/token-b", exclude_repo="x") == []

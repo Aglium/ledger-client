@@ -176,3 +176,18 @@ class TestPlaces:
         b = places_of("def f():\n    a = 1\n    b = 3\n", "@@ -3 +3 @@\n-    b = 1\n+    b = 3")
         same, _after = meet(a, b)
         assert same == [("in", "def f():")]
+
+
+def test_the_same_ticket_in_another_place_is_a_note(tmp_path, work):
+    commit(work, "feat/SKY-3-mine", {"errors.py": ERRORS.replace("code = 404", "code = 410")})
+    commit(work, "feat/SKY-3-theirs", {"errors.py": ERRORS.replace("code = 409", "code = 422")})
+    b = brief(tmp_path, work, ref="feat/SKY-3-mine")
+    assert "feat/SKY-3-theirs" not in listed(b)
+    assert any(r.startswith("note: open in this repository under the same ticket")
+               and "feat/SKY-3-theirs" in r for r in b.reasons)
+
+
+def test_a_php_array_value_on_the_next_line_is_not_a_function():
+    after = "<?php\nreturn [\n    'services' =>\n        ['a', 'b'],\n];\n"
+    got = places_of(after, "@@ -4 +4 @@\n-        ['a'],\n+        ['a', 'b'],")
+    assert all(p[0] != "in" for p in got.at)

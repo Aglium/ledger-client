@@ -124,6 +124,12 @@ _CONTAINED_MAX = 200
 _CONTAINED_PATHS = 200
 
 
+def _is_ancestor(repo: Path, a: str, b: str) -> bool:
+    r = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", a, b],
+                       capture_output=True, timeout=30)
+    return r.returncode == 0
+
+
 def _patch_ids(repo: Path, args: list[str]) -> set[str]:
     """`git patch-id --stable` of the patches a `git log -p` or `git show` prints."""
     try:
@@ -667,13 +673,15 @@ class LocalGitAdapter(VcsAdapter):
         if not got:
             return None
         merge = got[-1]
-        # The merge itself has the head as a parent, or reaches it through its
-        # second parent: what it brought in includes this change.
+        # What the merge brought in includes this change: the head is behind
+        # its second parent and not its first. A head already on `into`'s own
+        # line (a fast-forward) has only later, unrelated merges after it.
         try:
             parents = _git(p, "rev-list", "--parents", "-n", "1", merge).split()[1:]
         except ForgeUnavailable:
             return None
-        if len(parents) < 2:
+        if len(parents) < 2 or _is_ancestor(p, tip, parents[0]) \
+                or not _is_ancestor(p, tip, parents[1]):
             return None
         return merge
 

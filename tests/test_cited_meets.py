@@ -123,3 +123,24 @@ def test_a_pull_request_merged_into_stage_not_its_target_is_read_from_its_merge(
     # Targeting `stage` itself, it is done: nothing of its own, not listed.
     items, idle = described("stage")
     assert idle and not items
+
+
+def test_a_head_already_on_the_line_is_not_read_from_a_later_merge(tmp_path):
+    work = tmp_path / "w"
+    work.mkdir()
+    git(work, "init", "-q", "-b", "main")
+    (work / "a.py").write_text("x = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "start")
+    git(work, "checkout", "-qb", "stage")
+    (work / "a.py").write_text("x = 2\n")
+    git(work, "commit", "-qam", "on stage itself")
+    git(work, "branch", "feat/ff")                       # its head is on stage's own line
+    git(work, "checkout", "-qb", "feat/other", "main")
+    (work / "b.py").write_text("y = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "other")
+    git(work, "checkout", "-q", "stage")
+    git(work, "merge", "-q", "--no-ff", "-m", "Merge other", "feat/other")
+    vcs = LocalGitAdapter(work)
+    repo = vcs.list_repos()[0].full_name
+    assert vcs.landing_merge(repo, "stage", "feat/ff") is None
+    assert vcs.landing_merge(repo, "stage", "feat/other") is not None

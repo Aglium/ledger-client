@@ -618,6 +618,7 @@ class LiveIndex:
         ok = cfg.is_change_branch if cfg is not None else DEFAULT_RULES.allows
         self._population = [c for c in changes if c.kind != "integration" and ok(c.ref)]
         self._cfg = cfg
+        self._people_cache = None
 
     def open_in_repo(self, repo: str) -> list[Change]:
         """Somebody's own open work in this repository, newest first."""
@@ -1206,7 +1207,8 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
             s for s in result.siblings if (s.change.repo, s.change.ref) not in idle])
         b, _ = assemble(trimmed, idle)
     _same_repo_work(b, cfg, vcs, index, repo, ref, subj, result, shipped if mine_read else None,
-                    yours=yours)
+                    yours=yours, texts=local.texts if local is not None else None,
+                    uncommitted={f.path for f in pending})
     for i in b.impacts:
         if i.kind == "integration" and (i.repo, i.ref) in merges and i.how is None:
             n, where = merges[(i.repo, i.ref)]
@@ -1418,7 +1420,7 @@ def _merged_not_released(cfg: Config, vcs, index, i, base: str | None):
         return None
     if not merge:
         return None
-    delta, shown = impact_delta(cfg, vcs, {}, index, i.repo, i.ref, "integration", merge)
+    delta, _shown = impact_delta(cfg, vcs, {}, index, i.repo, i.ref, "integration", merge)
     if delta is None or delta.files == 0:
         return None
     return delta, f"{merge[:12]}^", base, merge[:12]
@@ -1434,11 +1436,14 @@ def _near(index, subject, ref: str, repo: str):
     """`index.siblings_near` for this subject, with both its names and both its times."""
     kw = dict(author=getattr(subject, "author", None), at=getattr(subject, "updated_at", None),
               ref=ref, exclude_repo=repo)
-    extra = dict(login=getattr(subject, "login", None), touched_at=getattr(subject, "touched_at", None))
+    import inspect
     try:
-        return index.siblings_near(**kw, **extra)
-    except TypeError:
-        return index.siblings_near(**kw)        # a server from before both
+        takes = "login" in inspect.signature(index.siblings_near).parameters
+    except (TypeError, ValueError):
+        takes = False
+    if takes:                                   # a server from before both does not
+        kw.update(login=getattr(subject, "login", None), touched_at=getattr(subject, "touched_at", None))
+    return index.siblings_near(**kw)
 
 
 def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
@@ -1629,10 +1634,14 @@ SAME_REPO_CAP_FORGE = 10
 SAME_REPO_SHOWN = 4
 #: More open changes than this sharing one file, and the file alone links none of them.
 SAME_REPO_HOT = 5
+#: Past this many characters a file's places are not read (`core.places` walks
+#: up from each changed line); such a file is generated or vendored.
+PLACES_MAX = 1_000_000
 
 
 def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str, subj,
-                    result, mine, *, yours) -> None:
+                    result, mine, *, yours, texts: dict | None = None,
+                    uncommitted=frozenset()) -> None:
     """Open work in this same repository that changes the same files.
 
     The rest of the brief is about repositories the reviewer is not looking
@@ -1728,7 +1737,8 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         verdict = None
         if can_read and reads < cap:
             reads += 1
-            verdict = _compare_places(cfg, vcs, subj, repo, ref, c, shared, mine_by_path, mine_at)
+            verdict = _compare_places(cfg, vcs, subj, repo, ref, c, shared, mine_by_path, mine_at,
+                                      texts=texts, uncommitted=uncommitted)
         if verdict is None:
             # Not readable: the file is all there is, and a crowded one is not enough.
             kept = [p for p in shared if p not in hot]
@@ -1736,7 +1746,9 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
                 met.append((c, kept, tickets, []))
             continue
         kind, detail = verdict
-        if kind == "same_work":
+        if kind == "apart" and tickets:
+            ticket_only.append((c, tickets))
+        elif kind == "same_work":
             same_work.append(c)
         elif kind == "places":
             met.append((c, shared, tickets, detail))
@@ -1793,8 +1805,8 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
                         for c in same_work[:5]))
     if ticket_only:
         b.reasons.append(
-            "note: open in this repository under the same ticket, changing none of the same "
-            "files: " + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
+            "note: open in this repository under the same ticket, changing nothing at the same "
+            "place: " + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
                                  for c, _ in ticket_only[:5]))
 
 
@@ -1828,7 +1840,8 @@ def _own_files_of(cfg: Config, vcs, subj, repo: str, c, *, paths_only: bool = Fa
 
 
 def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list[str],
-                    mine_by_path: dict, mine_at: dict):
+                    mine_by_path: dict, mine_at: dict, *, texts: dict | None = None,
+                    uncommitted=frozenset()):
     """How an open change of the same files meets this one.
 
     `("same_work", None)`: one's commits are all in the other, by ancestry or
@@ -1838,6 +1851,10 @@ def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list
     `("apart", None)`: same files, different places. None: could not be read.
     """
     from ledger.core.places import label, meet, places_of
+    # A file edited and not committed: its hunks are numbered against the
+    # working copy, which is not here to read.
+    if any(p in uncommitted for p in shared):
+        return None
     base = _own_base_of(cfg, vcs, subj, repo, c)
     if base is None:
         return None
@@ -1858,10 +1875,16 @@ def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list
             continue
         try:
             if path not in mine_at:
-                mine_at[path] = places_of(vcs.read_file(repo, ref, path), own.body or "")
-            at = places_of(vcs.read_file(repo, c.ref, path), f.body or "")
+                # The client's own copy when it sent one: the mirror may not
+                # have its latest push.
+                after = texts.get(path) if texts and path in texts else vcs.read_file(repo, ref, path)
+                mine_at[path] = places_of(after, own.body or "") if len(after) <= PLACES_MAX else None
+            theirs_after = vcs.read_file(repo, c.ref, path)
+            at = places_of(theirs_after, f.body or "") if len(theirs_after) <= PLACES_MAX else None
         except ForgeUnavailable:
             return None
+        if mine_at[path] is None or at is None:
+            return None             # generated or vendored size: the file is all there is
         same, after = meet(mine_at[path], at)
         places.extend((path, label(p)) for p in same)
         if after:
