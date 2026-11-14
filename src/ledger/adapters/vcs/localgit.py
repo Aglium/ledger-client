@@ -117,6 +117,26 @@ def _git(repo: Path, *args: str, timeout: float = 30, env: dict | None = None) -
     return r.stdout
 
 
+#: Past this many commits of its own that another change lacks, one change is
+#: not a copy of another; reading their patches would only cost.
+_CONTAINED_MAX = 200
+#: Files a patch comparison reads `outer`'s history for, at most.
+_CONTAINED_PATHS = 200
+
+
+def _patch_ids(repo: Path, args: list[str]) -> set[str]:
+    """`git patch-id --stable` of the patches a `git log -p` or `git show` prints."""
+    try:
+        log = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=60)
+        if log.returncode != 0:
+            raise ForgeUnavailable("localgit", f"git {args[0]} failed")
+        ids = subprocess.run(["git", "-C", str(repo), "patch-id", "--stable"], input=log.stdout,
+                             capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ForgeUnavailable("localgit", str(e)) from e
+    return {line.split()[0] for line in ids.stdout.decode("utf-8", "replace").splitlines() if line}
+
+
 def _split_diff(diff: str) -> dict[str, str]:
     """A unified diff, split into one body per file path."""
     files: dict[str, str] = {}
@@ -635,6 +655,32 @@ class LocalGitAdapter(VcsAdapter):
             merge_base = base
         return [line for line in _git(p, "diff", "--name-only", f"{merge_base}..{head}").splitlines()
                 if line]
+
+    def work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
+        p = self._path(repo)
+        try:
+            outer_ref, inner_ref = self._resolve(p, outer), self._resolve(p, inner)
+            base = self._resolve_base(p, inner_base, inner)
+            if not _git(p, "rev-list", "--no-merges", "-n", "1", inner_ref, f"^{base}").strip():
+                return False        # nothing of its own: there is no work to be a copy of
+            # Its own commits that `outer` does not have by ancestry.
+            missing = _git(p, "rev-list", "--no-merges", inner_ref, f"^{base}",
+                           f"^{outer_ref}").split()
+            if not missing:
+                return True
+            if len(missing) > _CONTAINED_MAX:
+                return False
+            paths = [x for x in _git(p, "diff", "--name-only", f"{base}...{inner_ref}").splitlines() if x]
+            fork = _git(p, "merge-base", outer_ref, inner_ref).strip()
+            # What `outer` changed of those files since the two parted, as patches.
+            theirs = _patch_ids(p, ["log", "-p", "--no-merges", "--format=commit %H",
+                                    f"{fork}..{outer_ref}", "--", *paths[:_CONTAINED_PATHS]])
+            if not theirs:
+                return False
+            ours = _patch_ids(p, ["show", "-p", "--format=commit %H", *missing])
+        except ForgeUnavailable:
+            return None
+        return bool(ours) and ours <= theirs
 
     def list_tree(self, repo: str, ref: str) -> list[str]:
         p = self._path(repo)

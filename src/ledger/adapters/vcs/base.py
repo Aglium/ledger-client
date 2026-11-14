@@ -269,6 +269,16 @@ class VcsAdapter(ABC):
         """
         return None
 
+    def work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
+        """Whether every commit of `inner` beyond `inner_base` is already on `outer`.
+
+        On `outer` by ancestry, or as the same patch under another commit: a
+        cherry-pick to another branch, a rebase, a pull request stacked on
+        this one. Two such changes are one piece of work, not two that meet.
+        None means this source cannot tell.
+        """
+        return None
+
     def changed_paths(self, repo: str, base: str, head: str) -> list[str]:
         """Which files changed, without their contents.
 

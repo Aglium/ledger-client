@@ -1552,6 +1552,8 @@ SAME_REPO_CAP = 60
 SAME_REPO_CAP_FORGE = 10
 #: Of those that change the same files, how many become items; the rest are named.
 SAME_REPO_SHOWN = 4
+#: More open changes than this sharing one file, and the file alone links none of them.
+SAME_REPO_HOT = 5
 
 
 def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str, subj,
@@ -1623,38 +1625,67 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         if not eligible(c):
             continue
         compared += 1
-        # Its own diff, against what it is built on, never against the
-        # subject's base: a port cut from an integration branch read against
-        # the default one carries all of it, and was listed against changes
-        # its own diff does not touch.
-        theirs = None
-        if c.base_ref:
-            try:
-                theirs = set(vcs.changed_paths(repo, c.base_ref, c.ref))
-            except ForgeUnavailable:
-                theirs = None       # stacked on a branch since deleted: read as a branch
+        theirs = _own_files_of(cfg, vcs, subj, repo, c, paths_only=True)
         if theirs is None:
-            try:
-                got = _impact_base(cfg, vcs, subj.repos, repo, c.ref, "branch", c.sha)
-                if got is None:
-                    continue
-                theirs = set(vcs.changed_paths(repo, got[0], c.ref))
-            except ForgeUnavailable:
-                continue
-        shared = sorted(p for p in mine_paths & theirs if not is_test_path(p))
+            continue
+        shared = sorted(p for p in mine_paths & set(theirs) if not is_test_path(p))
         tickets = sorted(subject_tickets & set(c.tickets))
         if shared:
             found.append((c, shared, tickets))
         elif tickets:
             ticket_only.append((c, tickets))
+
+    # A file most open changes edit -- a service registry, a translation
+    # catalogue -- says nothing by being shared: each change edits its own
+    # entry. Counted over every open change that shares a file with this one.
+    users: dict[str, int] = {}
+    for _c, shared, _t in found:
+        for p in shared:
+            users[p] = users.get(p, 0) + 1
+    hot = {p for p, n in users.items() if n > SAME_REPO_HOT}
+
+    can_read = cap == SAME_REPO_CAP
+    met, mechanical, same_work = [], [], []
+    mine_at: dict[str, object] = {}
+    mine_by_path = {f.path: f for f in mine}
+    reads = 0
+    for c, shared, tickets in found:
+        verdict = None
+        if can_read and reads < cap:
+            reads += 1
+            verdict = _compare_places(cfg, vcs, subj, repo, ref, c, shared, mine_by_path, mine_at)
+        if verdict is None:
+            # Not readable: the file is all there is, and a crowded one is not enough.
+            kept = [p for p in shared if p not in hot]
+            if kept:
+                met.append((c, kept, tickets, []))
+            continue
+        kind, detail = verdict
+        if kind == "same_work":
+            same_work.append(c)
+        elif kind == "places":
+            met.append((c, shared, tickets, detail))
+        elif kind == "inserts":
+            mechanical.append((c, detail))
+    # Where they meet first, then how much of the change they share; the
+    # newest first among equals, as listed.
+    met.sort(key=lambda t: (-len(t[3]), -len(t[1])))
+
     added: list[Impact] = []
-    for c, shared, tickets in found[:SAME_REPO_SHOWN]:
-        names = ", ".join(f"`{p.rsplit('/', 1)[-1]}`" for p in shared[:3])
-        more = f" and {len(shared) - 3} more" if len(shared) > 3 else ""
+    for c, shared, tickets, places in met[:SAME_REPO_SHOWN]:
+        if places:
+            where = ", ".join(f"`{p.rsplit('/', 1)[-1]}`" + (f" (`{lab}`)" if lab else "")
+                              for p, lab in places[:3])
+            more = f" and {len(places) - 3} more" if len(places) > 3 else ""
+            what = f"the same place in {where}{more}"
+        else:
+            where = ", ".join(f"`{p.rsplit('/', 1)[-1]}`" for p in shared[:3])
+            more = f" and {len(shared) - 3} more" if len(shared) > 3 else ""
+            what = f"{where}{more}"
         added.append(Impact(
             repo=c.repo, ref=c.ref, kind=c.kind, author=c.author, shared_tickets=tickets,
             sha=(c.sha or "")[:12] or None,
-            how=(f"{SAME_FILES}{names}{more}"
+            how=(f"{SAME_FILES}{what}"
                  + (f", under {', '.join(tickets)}" if tickets else "")
                  + "; whichever lands second has to be read against the first")))
     if added:
@@ -1667,17 +1698,104 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         if b.recommendation in _QUIET:
             b.recommendation = Recommendation.REVIEW_WITH.value
             b.confidence = "medium"
-        unlisted = [c for c, _s, _t in found[SAME_REPO_SHOWN:]]
+        unlisted = [c for c, _s, _t, _p in met[SAME_REPO_SHOWN:]]
         b.reasons.insert(0, f"{len(added)} open change(s) in this repository change the same "
-                            "file(s) — see below"
+                            + ("place(s)" if any(t[3] for t in met[:SAME_REPO_SHOWN]) else "file(s)")
+                            + " — see below"
                          + (f"; also {', '.join(f'`{c.ref}`' for c in unlisted[:5])}"
                             + (f" and {len(unlisted) - 5} more" if len(unlisted) > 5 else "")
                             if unlisted else ""))
+    if mechanical:
+        b.reasons.append(
+            "note: adds next to the same lines as "
+            + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
+                        + f" in `{path.rsplit('/', 1)[-1]}`" for c, path in mechanical[:5])
+            + " — a merge conflict to resolve, each adds its own")
+    if same_work:
+        b.reasons.append(
+            "note: the same work in another form (its commits are in the other), not listed: "
+            + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
+                        for c in same_work[:5]))
     if ticket_only:
         b.reasons.append(
             "note: open in this repository under the same ticket, changing none of the same "
             "files: " + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
                                  for c, _ in ticket_only[:5]))
+
+
+def _own_base_of(cfg: Config, vcs, subj, repo: str, c) -> str | None:
+    """What an open change is built on: its pull request's target, else the
+    default or integration branch it was cut from."""
+    if c.base_ref:
+        try:
+            vcs.head_sha(repo, c.base_ref)
+            return c.base_ref
+        except ForgeUnavailable:
+            pass                # stacked on a branch since deleted: read as a branch
+    try:
+        got = _impact_base(cfg, vcs, subj.repos, repo, c.ref, "branch", c.sha)
+    except ForgeUnavailable:
+        return None
+    return got[0] if got else None
+
+
+def _own_files_of(cfg: Config, vcs, subj, repo: str, c, *, paths_only: bool = False):
+    """An open change's own diff, against what it is built on, never against
+    the subject's base: a port cut from an integration branch read against
+    the default one carries all of it."""
+    base = _own_base_of(cfg, vcs, subj, repo, c)
+    if base is None:
+        return None
+    try:
+        return (vcs.changed_paths if paths_only else vcs.changed_files)(repo, base, c.ref)
+    except ForgeUnavailable:
+        return None
+
+
+def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list[str],
+                    mine_by_path: dict, mine_at: dict):
+    """How an open change of the same files meets this one.
+
+    `("same_work", None)`: one's commits are all in the other, by ancestry or
+    as the same patch -- a port, a stacked pull request, a duplicate branch.
+    `("places", [(path, label)])`: both change the same function, key or line.
+    `("inserts", path)`: both only add next to the same unchanged line.
+    `("apart", None)`: same files, different places. None: could not be read.
+    """
+    from ledger.core.places import label, meet, places_of
+    base = _own_base_of(cfg, vcs, subj, repo, c)
+    if base is None:
+        return None
+    contained = vcs.work_contained(repo, ref, c.ref, base)
+    if contained is None:
+        return None
+    if contained or (subj.own_commits and vcs.work_contained(repo, c.ref, ref, subj.base)):
+        return ("same_work", None)
+    try:
+        theirs = {f.path: f for f in vcs.changed_files(repo, base, c.ref) if f.path in set(shared)}
+    except ForgeUnavailable:
+        return None
+    places, inserts = [], []
+    for path in shared:
+        f = theirs.get(path)
+        own = mine_by_path.get(path)
+        if f is None or own is None:
+            continue
+        try:
+            if path not in mine_at:
+                mine_at[path] = places_of(vcs.read_file(repo, ref, path), own.body or "")
+            at = places_of(vcs.read_file(repo, c.ref, path), f.body or "")
+        except ForgeUnavailable:
+            return None
+        same, after = meet(mine_at[path], at)
+        places.extend((path, label(p)) for p in same)
+        if after:
+            inserts.append(path)
+    if places:
+        return ("places", places)
+    if inserts:
+        return ("inserts", inserts[0])
+    return ("apart", None)
 
 
 def _escalate_opposite_moves(b: ImpactBrief) -> None:
