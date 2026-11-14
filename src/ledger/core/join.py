@@ -39,6 +39,13 @@ class Change:
     #: commits do not. A citation, not a claim: it links two changes only
     #: where their diffs agree (see `service._link_without_a_ticket_key`).
     cited: tuple[str, ...] = ()
+    #: For kind="pr": the forge account that opened it. `author` is whoever
+    #: signed its head commit, an email; the two together say they are one
+    #: person (see `core.people`).
+    login: str | None = None
+    #: For kind="pr": when the forge last saw it change -- a push, a rebase, an
+    #: edit. `updated_at` is its head commit's time, which a rebase keeps.
+    touched_at: datetime | None = None
 
 
 @dataclass(frozen=True)

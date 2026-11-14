@@ -409,7 +409,7 @@ class Index(Protocol):
     def moving_on(self, contracts) -> dict: ...
     def inflight(self, repo: str, ref: str, tickets): ...
     def siblings_by_tickets(self, tickets, *, exclude_repo=None): ...
-    def siblings_near(self, *, author, at, ref="", exclude_repo=None): ...
+    def siblings_near(self, *, author, at, ref="", exclude_repo=None, login=None, touched_at=None): ...
     def siblings_by_signal(self, signals, *, exclude_repo=None): ...
     def open_in_repo(self, repo: str) -> list: ...
     # Optional: def same_files_in_repo(self, repo, paths, *, exclude_ref) -> (matches, unread)
@@ -676,7 +676,7 @@ class LiveIndex:
                 for c in self._population
                 if c.repo != exclude_repo and wanted & {t.upper() for t in c.cited}]
 
-    def siblings_near(self, *, author, at, ref="", exclude_repo=None):
+    def siblings_near(self, *, author, at, ref="", exclude_repo=None, login=None, touched_at=None):
         """The same author's work elsewhere, started within `NEAR` of this one,
         whose branch name shares a subject word with this one.
 
@@ -685,14 +685,34 @@ class LiveIndex:
         links, 13 of them defensible once a shared word was required. A team
         trying the client reported the same: a dashboards branch linked to a
         voice-bot change by time alone.
+
+        One person is every name they go by (`core.people`), and two changes
+        are near when any of their moments are: a head commit's time, which
+        a rebase keeps, or a pull request's last update. Two halves of one
+        change pushed three minutes apart had heads five hours apart.
         """
-        if not author or at is None or not ref:
+        if not (author or login) or at is None or not ref:
             return []
         from ledger.core.join import Sibling, shared_words
-        return [Sibling(c, tuple(c.tickets)) for c in self._others(exclude_repo)
-                if (c.author or "").lower() == author.lower() and c.updated_at is not None
-                and abs(c.updated_at.timestamp() - at.timestamp()) <= self.NEAR.total_seconds()
-                and shared_words(ref, c.ref)]
+        from ledger.core.people import apart, times_of
+        people = self._people()
+        me = people.names(author, login)
+        mine = [t for t in (at, touched_at) if t]
+        out = []
+        for c in self._others(exclude_repo):
+            if not (me & people.names(c.author, getattr(c, "login", None))):
+                continue
+            gap = apart(mine, times_of(c))
+            if gap is not None and gap <= self.NEAR.total_seconds() and shared_words(ref, c.ref):
+                out.append((gap, c))
+        out.sort(key=lambda t: (t[0], t[1].repo, t[1].ref))
+        return [Sibling(c, tuple(c.tickets)) for _g, c in out]
+
+    def _people(self):
+        if getattr(self, "_people_cache", None) is None:
+            from ledger.core.people import People
+            self._people_cache = People(self._population)
+        return self._people_cache
 
     def siblings_by_signal(self, signals, *, exclude_repo=None):
         """Changes elsewhere whose diffs share a RARE topic, table or migration with this one.
@@ -1382,6 +1402,17 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
 _QUIET = ("proceed", "insufficient_data")
 
 
+def _near(index, subject, ref: str, repo: str):
+    """`index.siblings_near` for this subject, with both its names and both its times."""
+    kw = dict(author=getattr(subject, "author", None), at=getattr(subject, "updated_at", None),
+              ref=ref, exclude_repo=repo)
+    extra = dict(login=getattr(subject, "login", None), touched_at=getattr(subject, "touched_at", None))
+    try:
+        return index.siblings_near(**kw, **extra)
+    except TypeError:
+        return index.siblings_near(**kw)        # a server from before both
+
+
 def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
                                diff_tickets: list[str], result,
                                subject_signals: set | None = None, *,
@@ -1428,9 +1459,7 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
         found.append((c, f"its diff also names {', '.join(f'`{n}`' for n in shared[:3])}, which "
                          "this change touches; no ticket links them"))
 
-    for sib in (index.siblings_near(author=getattr(subject, "author", None),
-                                    at=getattr(subject, "updated_at", None),
-                                    ref=ref, exclude_repo=repo) if own_branch else ()):
+    for sib in (_near(index, subject, ref, repo) if own_branch else ()):
         c = sib.change
         if (c.repo, c.ref) in known:
             continue

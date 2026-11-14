@@ -205,6 +205,7 @@ def collect(
                             open=True, sha=p.head_sha, base_ref=p.base_ref or None,
                             cited=tuple(sorted(set(extract_tickets(p.body or "", project_keys))
                                                - set(tickets))),
+                            login=p.author, touched_at=p.updated_at,
                         )
                     )
             except ForgeUnavailable as e:

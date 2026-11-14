@@ -37,7 +37,8 @@ class Forge:
             raise ForgeUnavailable("github", "rate limited")
         return [PullRef(repo=repo, number=8462, title="SKY-8638 Settle claims", head_ref="feat/settle",
                         base_ref="main", head_sha="a" * 40, author="ann",
-                        url=f"https://github.com/{repo}/pull/8462")]
+                        url=f"https://github.com/{repo}/pull/8462",
+                        updated_at=datetime(2026, 11, 10, tzinfo=timezone.utc))]
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +80,9 @@ def test_an_old_branch_with_an_open_pull_request_is_in_flight(mirrors):
     # Who pushed the head and when, as for a branch; and where it merges.
     assert prs[0].author == "ann@example.com" and prs[0].base_ref == "main"
     assert prs[0].updated_at == datetime.fromisoformat(OLD)
+    # And the forge's own answers beside them: the login that says the email
+    # is that person, and when the pull request last moved.
+    assert prs[0].login == "ann" and prs[0].touched_at == datetime(2026, 11, 10, tzinfo=timezone.utc)
 
 
 def test_without_a_forge_it_is_branches_only_as_before(mirrors):

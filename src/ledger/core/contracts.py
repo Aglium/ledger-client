@@ -56,12 +56,16 @@ class ContractEdge:
 #: Bump whenever a change here alters what discover() returns. The stored index
 #: keys on it: rows written by an older extractor are treated as stale and read
 #: live until the next sync rescans them, so an upgrade never serves old answers.
-EXTRACTOR_VERSION = "10"
+EXTRACTOR_VERSION = "11"
 
 # A dotted, lowercase literal is how most brokers name a topic.
 _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]")
 #: Extensions and dotted module paths that look like topics but are not.
 _NOT_TOPIC = re.compile(r"\.(py|json|ya?ml|md|txt|sql|html?|jsx?|tsx?|csv|ini|cfg|toml|lock|env|log)$", re.I)
+#: A Go template's own names: `{{- define "app.chart" -}}`, `{{ include
+#: "app.fullname" . }}`. Every Helm chart has them, the same ones, and two
+#: charts made from one starter shared `app.chart` as a "topic".
+_TEMPLATE_NAME_BEFORE = re.compile(r"\{\{-?\s*(?:define|include|template|block)\s*\(?\s*$")
 #: A dotted literal handed to a translation or flash-message call is a
 #: translation key, not a topic: `addSuccess('admin.claim.chat_message.sent')`,
 #: `{{ 'x.y.z'|trans }}`, `t('x.y')`, a form field's `'label' => 'x.y'`. Found on
@@ -371,6 +375,8 @@ def discover_in_text(repo: str, path: str, text: str, *,
             if _NOT_TOPIC.search(name) or _HOSTNAME.search(name) or name.count(".") > 5:
                 continue
             if _TRANSLATED_BEFORE.search(line[:m.start()]) or _TRANSLATED_AFTER.search(line[m.end():]):
+                continue
+            if low.endswith(".tpl") or _TEMPLATE_NAME_BEFORE.search(line[:m.start()]):
                 continue
             out.append(ContractEdge(repo, ContractRef(Surface.TOPIC, name),
                                     _direction(line, window), path, line.strip()[:200]))
