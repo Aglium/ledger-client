@@ -122,6 +122,10 @@ class Impact:
     #: as good as one in the branch name, and "same author, minutes apart" is
     #: a question rather than a finding.
     how: str | None = None
+    #: For a pull request: the branch it merges into. One already merged into
+    #: an integration branch but not into this has nothing of its own beyond
+    #: that branch, and is still unreleased work (`service.describe_impacts`).
+    target: str | None = None
     #: The next four make the item stand on its own for a reader who cannot
     #: open the other repository. Real feedback, after a review built on a
     #: bare pointer was checked by the branch's author: "The brief gave only a
@@ -692,7 +696,8 @@ def build_brief(
         Impact(repo=s.change.repo, ref=s.change.ref, kind=s.change.kind,
                author=s.change.author, shared_tickets=list(s.shared_tickets),
                where=s.change.integration_ref,
-               sha=(s.change.sha or "")[:12] or None)
+               sha=(s.change.sha or "")[:12] or None,
+               target=getattr(s.change, "base_ref", None))
         for s in siblings.siblings
     ]
 

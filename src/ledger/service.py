@@ -753,16 +753,17 @@ class LiveIndex:
         """
         from ledger.core.effect import _same, delta_of
         from ledger.core.join import Sibling
+        from ledger.pipeline.signals import edges_meet
         wanted = [c for c in contracts if c.surface != Surface.TABLE]
         if not wanted:
             return []
-        opposite = {Edge.PUBLISHES: Edge.CONSUMES, Edge.CONSUMES: Edge.PUBLISHES}
         touching: dict = {}
         seen = []
         for c in self._others(exclude_repo):
             d = delta_of(c.repo, self._files(c))
             for x, theirs in d.contracts.items():
-                theirs = theirs - {Edge.MENTIONS}
+                if x.surface != Surface.TOPIC:
+                    theirs = theirs - {Edge.MENTIONS}
                 for y in wanted:
                     if theirs and _same(x, y):
                         touching.setdefault(y, set()).add((c.repo, c.ref))
@@ -771,10 +772,8 @@ class LiveIndex:
         for c, x, theirs, y in seen:
             if len(touching.get(y, ())) > CONTRACT_RARE:
                 continue
-            if edges is not None:
-                mine = set(edges.get(y, ()))
-                if not any(opposite.get(m) in theirs for m in mine):
-                    continue
+            if edges is not None and not edges_meet(set(edges.get(y, ())), theirs, y.surface):
+                continue
             hits.setdefault((c.repo, c.ref), (c, set()))[1].add(x.name)
         return [(Sibling(c, tuple(c.tickets)), sorted(names)) for c, names in hits.values()]
 
@@ -1373,8 +1372,12 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
             i.ask = ask_line(i.ref, i.author, None, [])
             continue
         if delta.files == 0 and i.kind in ("branch", "pr"):
-            idle.append(i)
-            continue
+            landed = _merged_not_released(cfg, vcs, index, i, base)
+            if landed is None:
+                idle.append(i)
+                continue
+            delta, base, i.where, i.sha = landed
+            i.evidence = evidence_line(sha=i.sha, where=i.where, base=base, summarised=True)
         i.shares = shared_names(mine.names, delta.names)[:6] if known_mine else None
         i.effect = effect_line(delta)
         # What the index knows of the other repository's part in a contract
@@ -1394,6 +1397,31 @@ def describe_impacts(impacts: list[Impact], cfg: Config, vcs: VcsAdapter, repos:
     if idle:
         impacts[:] = [i for i in impacts if all(i is not x for x in idle)]
     return {(i.repo, i.ref) for i in idle}
+
+
+def _merged_not_released(cfg: Config, vcs, index, i, base: str | None):
+    """A pull request with nothing beyond `base` because it is merged into it,
+    and not into the branch it targets: still unreleased work.
+
+    Read as what its merge brought into `base`, `(delta, base, where, sha)`;
+    None when that is not the case or cannot be read. Only a pull request:
+    its target says where it is going, and a branch merged into the line it
+    was cut from is done, not in flight -- thirteen such "stage port"
+    branches once led brief after brief.
+    """
+    target = getattr(i, "target", None)
+    if i.kind != "pr" or not target or not base or base == target:
+        return None
+    try:
+        merge = vcs.landing_merge(i.repo, base, i.ref)
+    except ForgeUnavailable:
+        return None
+    if not merge:
+        return None
+    delta, shown = impact_delta(cfg, vcs, {}, index, i.repo, i.ref, "integration", merge)
+    if delta is None or delta.files == 0:
+        return None
+    return delta, f"{merge[:12]}^", base, merge[:12]
 
 
 #: A verdict this may overturn. `review_with` and anything stronger already
@@ -1493,7 +1521,8 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
         # `not_local` as well printed every one of these twice.
         b.impacts.append(Impact(
             repo=c.repo, ref=c.ref, kind=c.kind, author=c.author,
-            shared_tickets=list(c.tickets), where=c.integration_ref, sha=c.sha, how=why))
+            shared_tickets=list(c.tickets), where=c.integration_ref, sha=c.sha, how=why,
+            target=c.base_ref))
     # The verdict's own sentence is now false. Left in place it read "no
     # cross-repo work shares this ticket" directly above the cross-repo work.
     if near_only:
@@ -1550,14 +1579,31 @@ def _cited_candidates(b: ImpactBrief, index, repo: str, ref: str, result, *,
     # under review is somebody's counterpart now. Newest first within each.
     picked = sorted(seen.values(), key=lambda x: x[0].kind == "integration")[:CITED_CANDIDATES]
     return [Impact(repo=c.repo, ref=c.ref, kind=c.kind, author=c.author, shared_tickets=tickets,
-                   where=c.integration_ref, sha=c.sha,
+                   where=c.integration_ref, sha=c.sha, target=c.base_ref,
                    how=f"{CITED}{', '.join(tickets)}: {who} it; no branch, title or commit does")
             for c, tickets, who in picked]
 
 
+#: Shared names that confirm a citation without a contract: two of at least
+#: this length, or one of `CITED_NAME_ALONE`.
+CITED_NAME_MIN = 8
+CITED_NAME_ALONE = 12
+
+
+def _specific(names) -> bool:
+    long_ = [n for n in names if len(n) >= CITED_NAME_MIN]
+    return len(long_) >= 2 or any(len(n) >= CITED_NAME_ALONE for n in names)
+
+
 def _keep_confirmed_citations(b: ImpactBrief, cited: list[Impact]) -> None:
-    """List the citation candidates whose diff meets this one's; drop the rest."""
-    kept = [i for i in cited if i.over or i.shares]
+    """List the citation candidates whose diff meets this one's; drop the rest.
+
+    Meets: over a contract or topic both diffs touch outside their tests, or
+    on names specific enough to mean one thing (`_specific`). Three short
+    names two unrelated diffs happened to share, or one name and its longer
+    cousin, confirmed citations that were noise.
+    """
+    kept = [i for i in cited if i.over or _specific(i.shares or [])]
     b.impacts.extend(kept)
     n = len(kept)
     if n:

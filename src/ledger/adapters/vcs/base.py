@@ -269,6 +269,15 @@ class VcsAdapter(ABC):
         """
         return None
 
+    def landing_merge(self, repo: str, into: str, head: str) -> str | None:
+        """The merge commit on `into` that brought `head` in, or None.
+
+        On `into`'s first-parent line, the oldest merge that has `head` in it.
+        None when `head` is not in `into`, came in without a merge commit
+        (fast-forward, squash), or this source cannot tell.
+        """
+        return None
+
     def work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
         """Whether every commit of `inner` beyond `inner_base` is already on `outer`.
 

@@ -40,7 +40,9 @@ from ledger.core.overlap import DiffFile, Kind, extract_signals
 #: to bump -- unlike the field layer, which is why they are separate versions.
 #: s3: each change read against its own base (a pull request's target, or the
 #: line a branch is cut from), and its paths and contracts stored too.
-SIGNALS_VERSION = "s3"
+#: s4: topics a diff names without a direction are stored as contracts too
+#: (`mentions:topic:...`), and tests touch no contract.
+SIGNALS_VERSION = "s4"
 
 #: Topics, tables and migrations. See the module docstring for the 536,820 to
 #: 6,620 that chose this.
@@ -90,19 +92,38 @@ def paths_of(files) -> set[str]:
 
 def contracts_of(repo: str, files) -> set[str]:
     """`edge:surface:name` for each topic and route the diff publishes or
-    consumes, e.g. `consumes:topic:document.uploaded`.
+    consumes, e.g. `consumes:topic:document.uploaded`, and each topic it names
+    without saying which way (`mentions:topic:...`).
 
     Tables are left out, for the reason `LiveIndex.parties` gives; so are
-    mentions, which are a name in a log line, not an end of anything. The
-    direction is kept: two changes that both publish a topic share a
-    vocabulary, and one that consumes what the other publishes is the other
-    end of it.
+    routes only mentioned, which are a URL in a log line. The direction is
+    kept: two changes that both publish a topic share a vocabulary, and one
+    that consumes what the other publishes is the other end of it. A topic
+    named with no direction -- a constant, a dispatch through a helper -- is
+    an end too, of unknown side (see `edges_meet`).
     """
     from ledger.core.contracts import Edge, Surface
     from ledger.core.effect import delta_of
     d = delta_of(repo, files)
     return {f"{e.value}:{c.surface.value}:{c.name}" for c, edges in d.contracts.items()
-            if c.surface != Surface.TABLE for e in edges - {Edge.MENTIONS}}
+            if c.surface != Surface.TABLE for e in edges
+            if e != Edge.MENTIONS or c.surface == Surface.TOPIC}
+
+
+def edges_meet(mine, theirs, surface) -> bool:
+    """Whether two changes' sides of one contract make them its two ends.
+
+    One publishes what the other consumes. For a topic, a side that only
+    names it, with no direction, meets any side: which end it is cannot be
+    told, and a rare topic named by two diffs is the strongest link there is
+    short of a ticket. Two publishers of a topic are not two ends.
+    """
+    from ledger.core.contracts import Edge, Surface
+    opposite = {Edge.PUBLISHES: Edge.CONSUMES, Edge.CONSUMES: Edge.PUBLISHES}
+    if any(opposite.get(m) in theirs for m in mine):
+        return True
+    return surface == Surface.TOPIC and bool(mine) and bool(theirs) \
+        and (Edge.MENTIONS in mine or Edge.MENTIONS in theirs)
 
 
 def contract_of(value: str):

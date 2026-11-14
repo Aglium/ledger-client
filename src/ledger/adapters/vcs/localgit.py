@@ -656,6 +656,27 @@ class LocalGitAdapter(VcsAdapter):
         return [line for line in _git(p, "diff", "--name-only", f"{merge_base}..{head}").splitlines()
                 if line]
 
+    def landing_merge(self, repo: str, into: str, head: str) -> str | None:
+        p = self._path(repo)
+        try:
+            into_ref, tip = self._resolve(p, into), self._resolve(p, head)
+            got = _git(p, "rev-list", "--first-parent", "--merges", "--ancestry-path",
+                       f"{tip}..{into_ref}").split()
+        except ForgeUnavailable:
+            return None
+        if not got:
+            return None
+        merge = got[-1]
+        # The merge itself has the head as a parent, or reaches it through its
+        # second parent: what it brought in includes this change.
+        try:
+            parents = _git(p, "rev-list", "--parents", "-n", "1", merge).split()[1:]
+        except ForgeUnavailable:
+            return None
+        if len(parents) < 2:
+            return None
+        return merge
+
     def work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
         p = self._path(repo)
         try:

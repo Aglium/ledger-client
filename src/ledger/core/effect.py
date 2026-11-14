@@ -114,7 +114,13 @@ def _sides(body: str) -> tuple[str, str]:
 
 
 def _edges(repo: str, path: str, text: str) -> dict[ContractRef, set[Edge]]:
+    """The contracts a file's changed lines touch. Not its tests: a topic a
+    unit test names is a fixture, and a change stacked on another was linked
+    to a third repository by its test alone."""
+    from ledger.core.estate import is_test_path
     out: dict[ContractRef, set[Edge]] = {}
+    if is_test_path(path):
+        return out
     for e in discover_in_text(repo, path, text):
         out.setdefault(e.contract, set()).add(e.edge)
     return out
