@@ -42,7 +42,9 @@ from ledger.core.overlap import DiffFile, Kind, extract_signals
 #: line a branch is cut from), and its paths and contracts stored too.
 #: s4: topics a diff names without a direction are stored as contracts too
 #: (`mentions:topic:...`), and tests touch no contract.
-SIGNALS_VERSION = "s4"
+#: s5: a topic named only, on both sides, is no link; dependency manifests and
+#: attribute-key constants name no topic; event kinds like `Orders.Created`.
+SIGNALS_VERSION = "s5"
 
 #: Topics, tables and migrations. See the module docstring for the 536,820 to
 #: 6,620 that chose this.
@@ -114,16 +116,21 @@ def edges_meet(mine, theirs, surface) -> bool:
     """Whether two changes' sides of one contract make them its two ends.
 
     One publishes what the other consumes. For a topic, a side that only
-    names it, with no direction, meets any side: which end it is cannot be
-    told, and a rare topic named by two diffs is the strongest link there is
-    short of a ticket. Two publishers of a topic are not two ends.
+    names it, with no direction, meets a side that has one: which end it is
+    cannot be told, and the other end is somebody's. Two sides that only name
+    it share a vocabulary and nothing more -- two services each adding
+    tracing constants named the same attribute keys, and were paired by
+    them. Two publishers of a topic are not two ends.
     """
     from ledger.core.contracts import Edge, Surface
     opposite = {Edge.PUBLISHES: Edge.CONSUMES, Edge.CONSUMES: Edge.PUBLISHES}
     if any(opposite.get(m) in theirs for m in mine):
         return True
-    return surface == Surface.TOPIC and bool(mine) and bool(theirs) \
-        and (Edge.MENTIONS in mine or Edge.MENTIONS in theirs)
+    if surface != Surface.TOPIC:
+        return False
+    directed = {Edge.PUBLISHES, Edge.CONSUMES}
+    return (Edge.MENTIONS in mine and bool(set(theirs) & directed)) \
+        or (Edge.MENTIONS in theirs and bool(set(mine) & directed))
 
 
 def contract_of(value: str):

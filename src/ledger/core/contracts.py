@@ -56,10 +56,31 @@ class ContractEdge:
 #: Bump whenever a change here alters what discover() returns. The stored index
 #: keys on it: rows written by an older extractor are treated as stale and read
 #: live until the next sync rescans them, so an upgrade never serves old answers.
-EXTRACTOR_VERSION = "11"
+EXTRACTOR_VERSION = "12"
 
 # A dotted, lowercase literal is how most brokers name a topic.
 _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]")
+#: An event kind spelled as a type: `Documents.Received`, `ClaimDraft.Submitted`.
+#: A topic only where something says it is an event (`_EVENT_HINT`): the same
+#: shape is a namespace or a log category everywhere else.
+_EVENT_KIND = re.compile(r"['\"]([A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*){1,2})['\"]")
+_EVENT_HINT = re.compile(r"(?i)event|topic|message|command|webhook|kafka|rabbit|queue|broker|"
+                         r"consumer|producer|publisher|subscriber|listener")
+#: Choosing what to do by an event's kind is reading it: `if event_type ==
+#: 'x.y'`, `kind in ('x.y', ...)`, `case 'x.y':`.
+_DISPATCH = re.compile(
+    r"""(?i)(?:\b\w*(?:event|type|kind|topic)\w*\b['"\]\)]*\s*(?:===?|!=|\bin\b)\s*[\(\[{]?\s*"""
+    r"""(?:['"][^'"]*['"]\s*,\s*)*|\bcase\s+)$""")
+#: Files that list packages, not messages: `jaraco.functools` in a lock file.
+_MANIFEST = re.compile(
+    r"(^|/)(pyproject\.toml|setup\.cfg|setup\.py|requirements[^/]*\.txt|Pipfile|package\.json|"
+    r"composer\.json|go\.mod|go\.sum|Gemfile|[^/]*\.gemspec|pom\.xml|build\.gradle(\.kts)?|"
+    r"Cargo\.toml)$|\.lock$|(^|/)package-lock\.json$", re.I)
+#: A constant naming an attribute key, a label or a header is not a topic:
+#: `KEY_SERVICE_NAME = "service.name"` is a tracing attribute.
+_KEY_CONSTANT = re.compile(
+    r"(?i)(?:^|[^\w])(?:\w*_)?(?:key|keys|attr|attrs|attribute|attributes|label|labels|header|headers|"
+    r"field|fields|param|params)(?:_\w*)?\s*(?::[^=]*)?=\s*$")
 #: Extensions and dotted module paths that look like topics but are not.
 _NOT_TOPIC = re.compile(r"\.(py|json|ya?ml|md|txt|sql|html?|jsx?|tsx?|csv|ini|cfg|toml|lock|env|log)$", re.I)
 #: A Go template's own names: `{{- define "app.chart" -}}`, `{{ include
@@ -172,8 +193,10 @@ _TABLE_OP = re.compile(r"\b(?:create_table|add_column|drop_column|alter_column)\
 _TABLENAME = re.compile(r"__tablename__\s*=\s*['\"](?P<t>\w+)['\"]")
 
 
-def _direction(line: str, window: str) -> Edge:
+def _direction(line: str, window: str, before: str = "") -> Edge:
     produce, consume = _PRODUCE.search(line), _CONSUME.search(line)
+    if not produce and not consume and before and _DISPATCH.search(before):
+        return Edge.CONSUMES
     if produce and not consume:
         return Edge.PUBLISHES
     if consume and not produce:
@@ -368,9 +391,16 @@ def discover_in_text(repo: str, path: str, text: str, *,
     else:
         prefixes = router_prefixes(text) if ("APIRouter" in text or "Blueprint" in text) else {}
 
+    manifest = bool(_MANIFEST.search(path))
+    event_file = bool(_EVENT_HINT.search(path))
     for i, line in enumerate(lines):
         window = "\n".join(lines[max(0, i - 3):i + 4])
-        for m in _TOPIC.finditer(line):
+        found = [] if manifest else [(m, False) for m in _TOPIC.finditer(line)]
+        if not manifest:
+            hinted = event_file or bool(_EVENT_HINT.search(line))
+            found += [(m, True) for m in _EVENT_KIND.finditer(line)
+                      if hinted or _DISPATCH.search(line[:m.start()])]
+        for m, _kind in found:
             name = m.group(1)
             if _NOT_TOPIC.search(name) or _HOSTNAME.search(name) or name.count(".") > 5:
                 continue
@@ -378,8 +408,10 @@ def discover_in_text(repo: str, path: str, text: str, *,
                 continue
             if low.endswith(".tpl") or _TEMPLATE_NAME_BEFORE.search(line[:m.start()]):
                 continue
+            if _KEY_CONSTANT.search(line[:m.start()]):
+                continue
             out.append(ContractEdge(repo, ContractRef(Surface.TOPIC, name),
-                                    _direction(line, window), path, line.strip()[:200]))
+                                    _direction(line, window, line[:m.start()]), path, line.strip()[:200]))
         for m in _HTTP_DECL.finditer(line):
             http_path = m.group("path")
             declared = bool(_HTTP_ROUTE_DECORATOR.search(m.group(0)))

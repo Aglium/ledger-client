@@ -40,9 +40,12 @@ def test_a_topic_named_without_a_direction_is_stored_as_one():
 
 
 class TestEnds:
-    def test_a_mention_meets_any_side_of_a_topic(self):
+    def test_a_mention_meets_a_side_with_a_direction(self):
         assert edges_meet({Edge.MENTIONS}, {Edge.PUBLISHES}, Surface.TOPIC)
         assert edges_meet({Edge.CONSUMES}, {Edge.MENTIONS}, Surface.TOPIC)
+
+    def test_two_mentions_are_a_vocabulary_not_two_ends(self):
+        assert not edges_meet({Edge.MENTIONS}, {Edge.MENTIONS}, Surface.TOPIC)
 
     def test_two_publishers_do_not(self):
         assert not edges_meet({Edge.PUBLISHES}, {Edge.PUBLISHES}, Surface.TOPIC)
@@ -51,12 +54,13 @@ class TestEnds:
         assert not edges_meet({Edge.MENTIONS}, {Edge.MENTIONS}, Surface.HTTP)
 
 
-def test_two_diffs_naming_a_rare_topic_without_direction_are_linked():
+def test_a_rare_topic_named_here_and_read_there_is_linked():
     vcs = FakeAdapter(
         repos=[RepoRef(full_name=r, default_branch="main", host="fake") for r in ("core", "comms")],
         branches={"comms": [BranchRef(repo="comms", name="feat/doc-kinds", head_sha="d" * 40,
                                       updated_at=NOW, author="bob@x")]},
-        diffs={"comms": [ChangedFile("app/kinds.py", "+DOC = 'document.uploaded'\n")]},
+        diffs={"comms": [ChangedFile("app/kinds.py",
+                                     "+    if data['event_type'] == 'document.uploaded':\n")]},
         ahead={("comms", "main", "feat/doc-kinds"): 1})
     idx = service.LiveIndex(vcs, {"core": "main", "comms": "main"}, None)
     idx.use_changes([Change(repo="comms", ref="feat/doc-kinds", tickets=(), author="bob@x",
@@ -190,3 +194,40 @@ def test_a_squashed_branch_has_no_landing_merge(tmp_path):
     vcs = LocalGitAdapter(work)
     repo = vcs.list_repos()[0].full_name
     assert vcs.landing_merge(repo, "stage", "feat/squashed") is None
+
+
+class TestWhatNamesNoTopic:
+    def test_attribute_key_constants(self):
+        assert contracts_of("svc", [ChangedFile("app/tracing.py",
+                                                '+KEY_SERVICE_NAME = "service.name"\n'
+                                                '+DEPLOYMENT_ENV_KEY = "deployment.environment"\n')]) == set()
+
+    def test_dependency_manifests(self):
+        assert contracts_of("svc", [ChangedFile("poetry.lock", '+name = "acme.tools"\n'),
+                                    ChangedFile("pyproject.toml", '+build-backend = "acme.build.api"\n')]) == set()
+
+    def test_reading_by_kind_is_consuming(self):
+        assert "consumes:topic:invoice.paid" in contracts_of(
+            "svc", [ChangedFile("app/feed.py", "+    if row['event_type'] == 'invoice.paid':\n")])
+
+
+class TestEventKindsSpelledAsTypes:
+    """A publisher's enum `ORDERS_SHIPPED = "Orders.Shipped"`, a consumer's
+    `if event_type == "Orders.Shipped"`: the same event, in capitals."""
+
+    def test_a_consumer_dispatching_on_it(self):
+        got = contracts_of("orch", [ChangedFile(
+            "app/services/intake.py",
+            '+    if header_type in ("Orders.Placed", "Orders.Shipped"):\n')])
+        assert {"consumes:topic:Orders.Placed", "consumes:topic:Orders.Shipped"} <= got
+
+    def test_a_member_of_an_events_module(self):
+        got = contracts_of("shop", [ChangedFile("app/entities/order_events.py",
+                                                '+    ORDERS_SHIPPED = "Orders.Shipped"\n')])
+        assert "mentions:topic:Orders.Shipped" in got
+
+    def test_the_two_meet(self):
+        assert edges_meet({Edge.MENTIONS}, {Edge.CONSUMES}, Surface.TOPIC)
+
+    def test_the_same_shape_elsewhere_is_no_topic(self):
+        assert contracts_of("svc", [ChangedFile("app/log.py", '+log = getLogger("Billing.Export")\n')]) == set()
