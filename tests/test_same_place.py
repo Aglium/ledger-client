@@ -284,3 +284,64 @@ def test_a_line_the_file_already_had_is_not_their_work_being_here(tmp_path, work
     commit(work, "feat/mine", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")})
     b = brief(tmp_path, work)
     assert not any("same work" in r and "feat/theirs" in r for r in b.reasons)
+
+
+COMPOSE = ("services:\n  web:\n    image: web\n    depends_on:\n      - db-tunnel\n"
+           "  db-tunnel:\n    image: tunnel\n")
+
+
+def test_removing_what_the_other_starts_depending_on_is_an_item(tmp_path, work):
+    (work / "compose.yml").write_text(COMPOSE)
+    git(work, "add", "-A"); git(work, "commit", "-qm", "compose")
+    commit(work, "feat/mine", {"compose.yml": COMPOSE.replace("    depends_on:\n      - db-tunnel\n", "")
+                               .replace("  db-tunnel:\n    image: tunnel\n", "")})
+    commit(work, "feat/theirs", {"compose.yml": COMPOSE + "  reports:\n    image: reports\n"
+                                 "    depends_on:\n      - db-tunnel\n"})
+    got = listed(brief(tmp_path, work))
+    assert "feat/theirs" in got
+    assert "this change removes `db-tunnel`, which it starts using" in got["feat/theirs"].how
+    # And the other way round, in their brief.
+    theirs = listed(brief(tmp_path, work, ref="feat/theirs"))
+    assert "it removes `db-tunnel`, which this change starts using" in theirs["feat/mine"].how
+
+
+PRICES = ("class Prices:\n    def calculateDelay(self, a, b):\n        return b - a\n\n"
+          "    def total(self, x):\n        return x\n")
+
+
+def test_a_function_added_beside_one_the_other_rewrites_is_an_item(tmp_path, work):
+    (work / "prices.py").write_text(PRICES)
+    git(work, "add", "-A"); git(work, "commit", "-qm", "prices")
+    commit(work, "feat/mine", {"prices.py": PRICES.replace("return b - a", "return max(b - a, 0)")})
+    commit(work, "feat/theirs", {"prices.py": PRICES.replace(
+        "        return b - a\n", "        return b - a\n\n    def calculateDelayMinutes(self, a, b):\n"
+        "        return (b - a) // 60\n")})
+    got = listed(brief(tmp_path, work))
+    assert "feat/theirs" in got
+    assert "it adds `calculateDelayMinutes` right beside `def calculateDelay(self, a, b)`" \
+        in got["feat/theirs"].how
+
+
+def test_other_places_of_a_file_few_change_lower_a_sure_proceed(tmp_path, work):
+    commit(work, "feat/mine", {"errors.py": ERRORS.replace("code = 404", "code = 410")})
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("code = 409", "code = 422")})
+    b = brief(tmp_path, work)
+    assert "feat/theirs" not in listed(b)
+    assert any(r.startswith("note: also changes the same file(s) in other places: `feat/theirs`")
+               for r in b.reasons)
+    assert not (b.recommendation == "proceed" and b.confidence == "high")
+
+
+def test_beside_in_a_braced_language():
+    from ledger.core.places import beside
+    before = ("<?php\nclass Delay\n{\n    public function calculateDelay($a, $b)\n    {\n"
+              "        return $b - $a;\n    }\n\n    public function other()\n    {\n        return 1;\n    }\n}\n")
+    mine = places_of(before.replace("return $b - $a;", "return max($b - $a, 0);"),
+                     "@@ -6 +6 @@\n-        return $b - $a;\n+        return max($b - $a, 0);")
+    after = before.replace("    }\n\n    public function other()",
+                           "    }\n\n    public function calculateDelayMinutes($a, $b)\n    {\n"
+                           "        return intdiv($b - $a, 60);\n    }\n\n    public function other()")
+    theirs = places_of(after, "@@ -8,0 +9,5 @@\n" + "\n".join(
+        "+" + line for line in after.splitlines()[8:13]))
+    got = beside(mine, theirs)
+    assert got and got[0][1] == ["calculateDelayMinutes"] and got[0][2]

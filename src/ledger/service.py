@@ -1752,7 +1752,7 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     hot = {p for p, n in users.items() if n > SAME_REPO_HOT}
 
     can_read = cap == SAME_REPO_CAP
-    met, mechanical, same_work = [], [], []
+    met, mechanical, same_work, elsewhere = [], [], [], []
     mine_at: dict[str, object] = {}
     mine_by_path = {f.path: f for f in mine}
     reads = 0
@@ -1767,15 +1767,28 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             # Not readable: the file is all there is, and a crowded one is not enough.
             kept = [p for p in shared if p not in hot]
             if kept:
-                met.append((c, kept, tickets, []))
+                met.append((c, kept, tickets, [], None))
             continue
         kind, detail = verdict
         if kind == "apart" and tickets:
             ticket_only.append((c, tickets))
+        elif kind == "apart":
+            if all(users.get(p, 0) <= 1 for p in shared):
+                elsewhere.append((c, shared))
         elif kind == "same_work":
             same_work.append(c)
         elif kind == "places":
-            met.append((c, shared, tickets, detail))
+            met.append((c, shared, tickets, detail, None))
+        elif kind == "removes":
+            path, name, who, other = detail[0]
+            more = f" (and {len(detail) - 1} more)" if len(detail) > 1 else ""
+            met.append((c, shared, tickets, [(path, name)],
+                        f"`{path.rsplit('/', 1)[-1]}`: {who} `{name}`{more}, which {other}"))
+        elif kind == "beside":
+            path, who, names, old = detail[0]
+            met.append((c, shared, tickets, [(path, old)],
+                        f"`{path.rsplit('/', 1)[-1]}`: {who} `{names[0]}` right beside `{old}`, "
+                        f"which the other rewrites"))
         elif kind == "inserts":
             mechanical.append((c, detail))
     # Where they meet in code first, then anywhere, then how much of the
@@ -1783,12 +1796,14 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     # never leads: forty-eight paragraphs of an agents' guide both branches
     # carry put the real conflict of a publisher fourth.
     from ledger.core.effect import _PROSE
-    met.sort(key=lambda t: (-sum(1 for p, _l in t[3] if not _PROSE.search(p)),
+    met.sort(key=lambda t: (t[4] is None, -sum(1 for p, _l in t[3] if not _PROSE.search(p)),
                             -len(t[3]), -len(t[1])))
 
     added: list[Impact] = []
-    for c, shared, tickets, places in met[:SAME_REPO_SHOWN]:
-        if places:
+    for c, shared, tickets, places, why in met[:SAME_REPO_SHOWN]:
+        if why:
+            what = why
+        elif places:
             where = ", ".join(f"`{p.rsplit('/', 1)[-1]}`" + (f" (`{lab}`)" if lab else "")
                               for p, lab in places[:3])
             more = f" and {len(places) - 3} more" if len(places) > 3 else ""
@@ -1813,7 +1828,7 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         if b.recommendation in _QUIET:
             b.recommendation = Recommendation.REVIEW_WITH.value
             b.confidence = "medium"
-        unlisted = [c for c, _s, _t, _p in met[SAME_REPO_SHOWN:]]
+        unlisted = [c for c, _s, _t, _p, _w in met[SAME_REPO_SHOWN:]]
         b.reasons.insert(0, f"{len(added)} open change(s) in this repository change the same "
                             + ("place(s)" if any(t[3] for t in met[:SAME_REPO_SHOWN]) else "file(s)")
                             + " — see below"
@@ -1831,6 +1846,15 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             "note: the same work in another form (its commits are in the other), not listed: "
             + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
                         for c in same_work[:5]))
+    if elsewhere:
+        # Few other changes touch these files, and this one changes them too:
+        # not an item, and not "nothing found" at high confidence either.
+        b.reasons.append(
+            "note: also changes the same file(s) in other places: "
+            + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
+                        + f" in `{s[0].rsplit('/', 1)[-1]}`" for c, s in elsewhere[:5]))
+        if b.recommendation == Recommendation.PROCEED.value and b.confidence == "high":
+            b.confidence = "medium"
     if ticket_only:
         b.reasons.append(
             "note: open in this repository under the same ticket, changing nothing at the same "
@@ -1907,7 +1931,7 @@ def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list
 def _read_places(vcs, subj, repo: str, ref: str, c, base: str, shared: list[str],
                  mine_by_path: dict, mine_at: dict, texts: dict | None):
     """`_compare_places` once its inputs are known not to be cached."""
-    from ledger.core.places import label, meet, places_of
+    from ledger.core.places import beside, label, meet, places_of, removed_used
     contained = vcs.work_contained(repo, ref, c.ref, base)
     if contained is None:
         return None
@@ -1924,7 +1948,7 @@ def _read_places(vcs, subj, repo: str, ref: str, c, base: str, shared: list[str]
         their_texts = vcs.read_files(repo, c.ref, wanted) if wanted else {}
     except ForgeUnavailable:
         return None
-    places, inserts = [], []
+    places, inserts, removes, kin, near = [], [], [], [], []
     for path in wanted:
         f, own = theirs[path], mine_by_path[path]
         if path not in mine_at:
@@ -1942,10 +1966,23 @@ def _read_places(vcs, subj, repo: str, ref: str, c, base: str, shared: list[str]
         places.extend((path, label(p)) for p in same)
         if after:
             inserts.append(path)
+        # Apart, and still one: a name one removes that the other starts
+        # using (a service the other's new ones depend on), and a function
+        # added right beside one the other rewrites.
+        i_remove, they_remove = removed_used(mine_at[path], at)
+        removes += [(path, n, "this change removes", "it starts using") for n in i_remove]
+        removes += [(path, n, "it removes", "this change starts using") for n in they_remove]
+        for who, (a, b) in (("it adds", (mine_at[path], at)), ("this change adds", (at, mine_at[path]))):
+            for place, names, named in beside(a, b):
+                (kin if named else near).append((path, who, names, label(place)))
+    if removes:
+        return ("removes", removes)
     if places:
         return ("places", places)
-    if inserts:
-        return ("inserts", inserts[0])
+    if kin:
+        return ("beside", kin)
+    if inserts or near:
+        return ("inserts", (inserts or [near[0][0]])[0])
     return ("apart", None)
 
 

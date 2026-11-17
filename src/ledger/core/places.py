@@ -49,6 +49,33 @@ _KEY = re.compile(r"""^\s*(?:-\s+)?["']?([^"'\s:=]+(?:\s[^"'\s:=]+)*?)["']?\s*(?
 _CLOSES = re.compile(r"^\s*[)\]}]")
 #: A line that only opens a bracket, with no key of its own: `Entry(`, `[`.
 _OPENS = re.compile(r"[(\[{]\s*$")
+#: A name another change can depend on: `mariadb-tunnel`, `calculate_delay`,
+#: `calculateDelay`. Six characters or more, and not a plain word.
+_NAME = re.compile(r"[A-Za-z_$][\w$-]*[\w$]")
+#: The name a function line declares: the last identifier before its `(`.
+_FUNC_NAME = re.compile(r"([A-Za-z_$][\w$]*)\s*\(")
+
+
+def _specific(name: str) -> bool:
+    return len(name) >= 6 and ("-" in name or "_" in name.strip("_$")
+                               or any(ch.isupper() for ch in name[1:]))
+
+
+def _declared(line: str) -> str | None:
+    """The name a line declares: its key, or the function it opens."""
+    if _is_func(line):
+        names = _FUNC_NAME.findall(line)
+        return names[0] if names else None
+    m = _KEY.match(line.strip())
+    return m.group(1) if m else None
+
+
+def func_name(place) -> str | None:
+    """The name of the function an `in` place ends with."""
+    if not place or place[0] != "in":
+        return None
+    names = _FUNC_NAME.findall(place[-1])
+    return names[0] if names else None
 
 
 @dataclass
@@ -64,6 +91,14 @@ class Places:
     #: What the change does at each place, as its changed lines: two changes
     #: making the same edit at a place (a port, a shared commit) merge clean.
     edits: dict = field(default_factory=dict)
+    #: Names the change stops declaring in this file -- a key, a function --
+    #: that the file no longer has anywhere after it.
+    gone: set = field(default_factory=set)
+    #: Names its added lines refer to, beyond the one each line declares.
+    uses: set = field(default_factory=set)
+    #: Functions it adds right next to, above or below, with the names of the
+    #: functions it adds there: `{("in", "class C", "calculateDelay()"): {"calculateDelayMinutes"}}`.
+    next_to: dict = field(default_factory=dict)
 
 
 def _indent(line: str) -> int:
@@ -140,9 +175,17 @@ def places_of(after: str, body: str) -> Places:
             hunks.append((int(m.group(3)), int(m.group(4)) if m.group(4) is not None else 1, []))
         elif hunks and raw.startswith("-"):
             hunks[-1][2].append(raw[1:])
+    text = "\n".join(lines)
     for start, count, gone in hunks:
         first = start - 1
         added = range(first, min(first + count, len(lines))) if count else range(0)
+        for line in gone:
+            name = _declared(line)
+            if name and _specific(name) and not re.search(rf"(?<![\w$-]){re.escape(name)}(?![\w$-])", text):
+                got.gone.add(name)
+        for i in added:
+            own = _declared(lines[i])
+            got.uses |= {n for n in _NAME.findall(lines[i]) if n != own and _specific(n)}
         # Only whitespace moved -- `catch {}` put on two lines: nothing happened there.
         if gone and count and _squashed("".join(gone)) == _squashed("".join(lines[i] for i in added)):
             continue
@@ -183,6 +226,7 @@ def places_of(after: str, body: str) -> Places:
                 if anchor.strip():
                     got.after.add(tuple(_holders(lines, before, _indent(anchor)))
                                   + (anchor.strip(),))
+                _neighbours(got, lines, added, before)
         # A removed line stood where the hunk is; with nothing added, git
         # numbers the line before the removal.
         pos = (start - 1) if count else start
@@ -192,6 +236,41 @@ def places_of(after: str, body: str) -> Places:
                 got.at.add(p)
                 got.edits.setdefault(p, set()).add("-" + _squashed(line))
     return got
+
+
+def _neighbours(got: Places, lines: list[str], added: range, before: int) -> None:
+    """The functions an added block sits right next to, and what it adds there."""
+    near = []
+    first = next((i for i in added if lines[i].strip()), None)
+    if first is None:
+        return
+    level = _indent(lines[first])
+    if 0 <= before < len(lines) and lines[before].strip():
+        # Just after a function's end: the `}` that closes it, or in an
+        # indented language the last line of its body.
+        o = _opener(lines, before) if _BRACKETISH.match(lines[before]) else before
+        for j in [o, *reversed(_holder_lines(lines, o, _indent(lines[o])))]:
+            if _indent(lines[j]) == level and _is_func(lines[j]):
+                near.append(j)
+                break
+            if _indent(lines[j]) < level:
+                break
+    nxt = added.stop
+    while nxt < len(lines) and not lines[nxt].strip():
+        nxt += 1
+    if nxt < len(lines) and _is_func(lines[nxt]):         # just above a function
+        near.append(nxt)
+    if not near:
+        return
+    new = set()
+    for i in added:
+        if _is_func(lines[i]):
+            name = _declared(lines[i])
+            if name:
+                new.add(name)
+    for o in near:
+        place = ("in",) + tuple(_holders(lines, o, _indent(lines[o]))) + (lines[o].strip(),)
+        got.next_to.setdefault(place, set()).update(new)
 
 
 def label(place) -> str:
@@ -224,3 +303,27 @@ def meet(a: Places, b: Places) -> tuple[list, list]:
             seen.add(p)
             out.append(p)
     return out, sorted(a.after & b.after)
+
+
+def removed_used(a: Places, b: Places) -> tuple[list, list]:
+    """Names one change removes and the other's added lines refer to:
+    (`a` removes, `b` uses), then (`b` removes, `a` uses)."""
+    return sorted(a.gone & b.uses), sorted(b.gone & a.uses)
+
+
+def beside(a: Places, b: Places) -> list[tuple]:
+    """Where `b` adds a function right next to one `a` changes.
+
+    `(place, new names, named after it)`: named after it when a new name
+    holds the old one -- `calculateDelayMinutes` beside `calculateDelay`.
+    """
+    out = []
+    # By name under the same holders: the other may have rewritten the
+    # signature line itself.
+    changed = {(p[:-1], func_name(p)) for p in a.at if p[0] == "in" and func_name(p)}
+    for place, new in b.next_to.items():
+        if (place[:-1], func_name(place)) in changed:
+            old = func_name(place) or ""
+            kin = sorted(n for n in new if old and len(old) >= 4 and old.lower() in n.lower())
+            out.append((place, kin or sorted(new), bool(kin)))
+    return out
