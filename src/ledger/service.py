@@ -1907,11 +1907,14 @@ def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list
     `("same_work", None)`: one's work is all in the other, by ancestry, as the
     same patches, or as a merge that would change nothing -- a port, a squash,
     a stacked pull request, a duplicate branch.
+    `("removes", [(path, name, who removes, who uses)])`: one removes a name the
+    other's new lines use.
     `("places", [(path, label)])`: both change the same function, key or line.
+    `("beside", [(path, who adds, names, label)])`: both add to the same function,
+    not the same lines.
     `("inserts", path)`: both only add next to the same unchanged line.
     `("apart", None)`: same files, different places. None: could not be read.
     """
-    from ledger.core.places import label, meet, places_of
     # A file edited and not committed: its hunks are numbered against the
     # working copy, which is not here to read.
     if any(p in uncommitted for p in shared):
