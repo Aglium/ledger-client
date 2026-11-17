@@ -898,6 +898,8 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     not in a mirror. Given, it replaces every read of the change itself; the
     rest of the estate is still read here.
     """
+    from ledger.timings import Stopwatch
+    watch = Stopwatch()
     vcs = tree_reader(adapters)
     missing_ref = False
     if local is not None and subject is None:
@@ -921,6 +923,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         subj = Subject(repos, repos[repo], 0)
         missing_ref = True
     index = open_index(subj.repos)
+    watch.lap("subject")
 
     # In-flight work: from the stored index where there is one. Re-enumerating
     # every branch in the organisation on every brief cost seven seconds on a
@@ -942,6 +945,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
             index.use_changes(got.changes, cfg)
 
     decisions, unreadable = index.decisions()
+    watch.lap("inflight")
 
     # Diff against the branch the change is actually built on. A change with
     # no commits beyond its base is already integrated and touches nothing of
@@ -1196,6 +1200,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
 
     from ledger.core.join import collapse_integration
     from ledger.core.rank import MERGES
+    watch.lap("own_diff")
     result, merges = collapse_integration(result)
     b, idle = assemble(result, set())
     if idle:
@@ -1206,9 +1211,11 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         trimmed = dataclasses.replace(result, siblings=[
             s for s in result.siblings if (s.change.repo, s.change.ref) not in idle])
         b, _ = assemble(trimmed, idle)
+    watch.lap("described")
     _same_repo_work(b, cfg, vcs, index, repo, ref, subj, result, shipped if mine_read else None,
                     yours=yours, texts=local.texts if local is not None else None,
                     uncommitted={f.path for f in pending})
+    watch.lap("same_repo")
     for i in b.impacts:
         if i.kind == "integration" and (i.repo, i.ref) in merges and i.how is None:
             n, where = merges[(i.repo, i.ref)]
@@ -1237,7 +1244,10 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     from ledger.core.rank import rank_brief
     b.ranked = rank_brief(b.to_dict())
     from ledger.core.brief import settle
-    return settle(b)
+    settled = settle(b)
+    watch.lap("rest")
+    watch.write(repo, ref)
+    return settled
 
 
 def diff_names(files) -> list[str]:
@@ -1669,9 +1679,14 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     known = {(i.repo, i.ref) for i in b.impacts}
     found, ticket_only = [], []
 
+    # Where this change is going is not work beside it: a pull request into a
+    # review branch listed that very branch as an item that meets it.
+    targets = {t for t in (subj.base, subj.integrated_in,
+                           getattr(getattr(result, "subject", None), "base_ref", None)) if t}
+
     def eligible(c) -> bool:
-        return (c.ref != ref and c.kind != "integration" and (c.repo, c.ref) not in known
-                and cfg.is_change_branch(c.ref))
+        return (c.ref != ref and c.ref not in targets and c.kind != "integration"
+                and (c.repo, c.ref) not in known and cfg.is_change_branch(c.ref))
 
     # A stored index read every open change's own files at sync time: the
     # overlap is a query over all of them, without a cap -- the pull request

@@ -272,8 +272,9 @@ class VcsAdapter(ABC):
     def landing_merge(self, repo: str, into: str, head: str) -> str | None:
         """The merge commit on `into` that brought `head` in, or None.
 
-        On `into`'s first-parent line, the oldest merge that has `head` in it.
-        None when `head` is not in `into`, came in without a merge commit
+        On `into`'s first-parent line, the oldest commit that has `head` in
+        it, when that is a merge whose second parent has it -- `head` itself,
+        or a later commit of the same branch merged once it had moved on. None when `head` is not in `into`, came in without a merge commit
         (fast-forward, squash), or this source cannot tell.
         """
         return None

@@ -193,3 +193,36 @@ def test_a_stored_answer_lists_each_change_once_and_notes_only_changes(estate, m
     b = brief(estate)
     assert [i.ref for i in b.impacts if i.repo == "core"].count("feat/SKY-9-theirs") == 1
     assert not any("feat/SKY-1-elsewhere" in r for r in b.reasons)
+
+
+def test_the_branch_a_change_goes_into_is_not_an_item_beside_it(estate, tmp_path):
+    """A pull request into a review branch listed that very branch as open
+    work changing the same file."""
+    cfg, vcs = estate
+    work = tmp_path / "work"
+    branch(work, "review/ABC-3-bundle", {"app/docs.py": "def build():\n    return 6\n"})
+    git(work, "checkout", "-qb", "feat/ABC-3-part", "review/ABC-3-bundle")
+    (work / "app" / "docs.py").write_text("def build():\n    return 7\n")
+    git(work, "commit", "-qam", "part")
+    git(work, "checkout", "-q", "main")
+    subprocess.run(["git", "-C", str(tmp_path / "mirrors" / "core.git"), "fetch", "-q", str(work),
+                    "+refs/heads/*:refs/heads/*"], check=True)
+    b = service.compute_brief(cfg, [vcs], "core", "feat/ABC-3-part",
+                              lambda repos: service.LiveIndex(vcs, repos, None),
+                              base="review/ABC-3-bundle")
+    refs = {i.ref for i in b.impacts if i.repo == "core"}
+    assert "review/ABC-3-bundle" not in refs
+    assert not any("review/ABC-3-bundle" in r for r in b.reasons)
+
+
+def test_timings_are_written_only_when_asked(estate, tmp_path, monkeypatch):
+    import json
+    out = tmp_path / "timings.jsonl"
+    brief(estate)
+    assert not out.exists()
+    monkeypatch.setenv("LEDGER_TIMINGS", str(out))
+    brief(estate)
+    got = json.loads(out.read_text().splitlines()[-1])
+    assert got["repo"] == "core" and got["ref"] == "feat/SKY-1-mine"
+    assert {"subject", "inflight", "described", "same_repo"} <= set(got["stages"])
+    assert got["total"] >= sum(got["stages"].values()) - 0.01

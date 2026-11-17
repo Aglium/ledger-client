@@ -666,13 +666,26 @@ class LocalGitAdapter(VcsAdapter):
         p = self._path(repo)
         try:
             into_ref, tip = self._resolve(p, into), self._resolve(p, head)
-            got = _git(p, "rev-list", "--first-parent", "--merges", "--ancestry-path",
-                       f"{tip}..{into_ref}").split()
+            # `into`'s own line, newest first, past what `head` already has.
+            # Not `--ancestry-path`: with `--first-parent` it walks only that
+            # line, and a head one commit behind what was merged (the branch
+            # moved on before its merge) has no path along it -- the merge
+            # was never found.
+            line = _git(p, "rev-list", "--first-parent", into_ref, f"^{tip}").split()
         except ForgeUnavailable:
             return None
-        if not got:
+        if not line or not _is_ancestor(p, tip, line[0]):
             return None
-        merge = got[-1]
+        # The oldest commit on the line that has `head`: once one has it, every
+        # later one does, so the search halves.
+        lo, hi = 0, len(line) - 1               # line[lo] has it; find the last that does
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if _is_ancestor(p, tip, line[mid]):
+                lo = mid
+            else:
+                hi = mid - 1
+        merge = line[lo]
         # What the merge brought in includes this change: the head is behind
         # its second parent and not its first. A head already on `into`'s own
         # line (a fast-forward) has only later, unrelated merges after it.

@@ -144,3 +144,49 @@ def test_a_head_already_on_the_line_is_not_read_from_a_later_merge(tmp_path):
     repo = vcs.list_repos()[0].full_name
     assert vcs.landing_merge(repo, "stage", "feat/ff") is None
     assert vcs.landing_merge(repo, "stage", "feat/other") is not None
+
+
+def test_a_head_behind_what_was_merged_is_still_found(tmp_path):
+    """The branch moved on after the pull request's head was read, and that
+    later commit is what the merge took. The merge still brought the head in."""
+    work = tmp_path / "w"
+    work.mkdir()
+    git(work, "init", "-q", "-b", "main")
+    (work / "a.py").write_text("x = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "start")
+    git(work, "checkout", "-qb", "stage")
+    git(work, "checkout", "-qb", "feat/reminders", "main")
+    (work / "b.py").write_text("y = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "first")
+    behind = git(work, "rev-parse", "HEAD").strip()
+    (work / "b.py").write_text("y = 2\n")
+    git(work, "commit", "-qam", "review fix")
+    git(work, "checkout", "-q", "stage")
+    (work / "c.py").write_text("z = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "on stage")
+    git(work, "merge", "-q", "--no-ff", "-m", "Merge reminders", "feat/reminders")
+    merge = git(work, "rev-parse", "HEAD").strip()
+    (work / "c.py").write_text("z = 2\n")
+    git(work, "commit", "-qam", "later on stage")
+    vcs = LocalGitAdapter(work)
+    repo = vcs.list_repos()[0].full_name
+    assert vcs.landing_merge(repo, "stage", behind) == merge
+    assert vcs.landing_merge(repo, "stage", "feat/reminders") == merge
+
+
+def test_a_squashed_branch_has_no_landing_merge(tmp_path):
+    work = tmp_path / "w"
+    work.mkdir()
+    git(work, "init", "-q", "-b", "main")
+    (work / "a.py").write_text("x = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "start")
+    git(work, "checkout", "-qb", "stage")
+    git(work, "checkout", "-qb", "feat/squashed", "main")
+    (work / "b.py").write_text("y = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "one")
+    git(work, "checkout", "-q", "stage")
+    git(work, "merge", "-q", "--squash", "feat/squashed")
+    git(work, "commit", "-qm", "Squashed")
+    vcs = LocalGitAdapter(work)
+    repo = vcs.list_repos()[0].full_name
+    assert vcs.landing_merge(repo, "stage", "feat/squashed") is None
