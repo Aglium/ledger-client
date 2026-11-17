@@ -79,6 +79,41 @@ class TestSpecificNames:
         assert service._specific(["documentuploadedat"])
 
 
+
+class TestCitationsByNamesOnly:
+    """A ticket in a description led to work elsewhere whose diff shared two
+    field names with this one and nothing else; it became an item and moved
+    a quiet brief to `review_with`."""
+
+    def brief(self):
+        from ledger.core.brief import ImpactBrief
+        return ImpactBrief(repo="acme-api", ref="feat/abc-1-notify", tickets=["ABC-1"],
+                           recommendation="proceed", confidence="high",
+                           reasons=["no cross-repo work shares this ticket and no binding decision names it"])
+
+    def cited(self, **kw):
+        return Impact(repo="acme-web", ref="feat/abc-2-form", kind="branch", author="bob",
+                      shared_tickets=["ABC-2"], **kw)
+
+    def test_names_alone_are_a_note(self):
+        b = self.brief()
+        service._keep_confirmed_citations(b, [self.cited(shares=["recipientid", "decidedat"])])
+        assert b.impacts == [] and b.recommendation == "proceed" and b.confidence == "high"
+        assert any(r.startswith("note:") and "acme-web feat/abc-2-form" in r and "recipientid" in r
+                   for r in b.reasons)
+
+    def test_a_shared_contract_is_an_item(self):
+        b = self.brief()
+        service._keep_confirmed_citations(b, [self.cited(over="topic document.uploaded")])
+        assert [i.repo for i in b.impacts] == ["acme-web"]
+        assert b.recommendation == "review_with"
+
+    def test_short_names_are_nothing(self):
+        b = self.brief()
+        service._keep_confirmed_citations(b, [self.cited(shares=["actionid"])])
+        assert b.impacts == [] and not any(r.startswith("note:") for r in b.reasons)
+
+
 def git(repo, *a):
     when = (NOW - timedelta(hours=2)).isoformat()
     env = {"GIT_AUTHOR_NAME": "ann", "GIT_AUTHOR_EMAIL": "ann@example.com", "GIT_COMMITTER_NAME": "ann",

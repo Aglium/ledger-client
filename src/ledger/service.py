@@ -1599,8 +1599,8 @@ def _cited_candidates(b: ImpactBrief, index, repo: str, ref: str, result, *,
             for c, tickets, who in picked]
 
 
-#: Shared names that confirm a citation without a contract: two of at least
-#: this length, or one of `CITED_NAME_ALONE`.
+#: Shared names that make a citation without a contract worth a note: two of
+#: at least this length, or one of `CITED_NAME_ALONE`.
 CITED_NAME_MIN = 8
 CITED_NAME_ALONE = 12
 
@@ -1613,13 +1613,21 @@ def _specific(names) -> bool:
 def _keep_confirmed_citations(b: ImpactBrief, cited: list[Impact]) -> None:
     """List the citation candidates whose diff meets this one's; drop the rest.
 
-    Meets: over a contract or topic both diffs touch outside their tests, or
-    on names specific enough to mean one thing (`_specific`). Three short
-    names two unrelated diffs happened to share, or one name and its longer
-    cousin, confirmed citations that were noise.
+    Meets: over a contract or topic both diffs touch outside their tests.
+    That makes an item. Names alone, however long, make a note: field names
+    like a recipient id or a decision time are common to every service in
+    an estate, and two unrelated diffs sharing them raised a quiet verdict
+    to `review_with` over work nothing connects. Names specific enough to
+    mean something (`_specific`) still say where the ticket leads.
     """
-    kept = [i for i in cited if i.over or _specific(i.shares or [])]
+    kept = [i for i in cited if i.over]
+    named = [i for i in cited if not i.over and _specific(i.shares or [])]
     b.impacts.extend(kept)
+    for i in named:
+        b.reasons.append(
+            f"note: a ticket a pull request description names ({', '.join(i.shared_tickets or [])}) "
+            f"leads to {i.repo} {i.ref}; the diffs share only names "
+            f"({', '.join((i.shares or [])[:4])}), no contract or topic")
     n = len(kept)
     if n:
         b.reasons = [r for r in b.reasons if not r.startswith("no cross-repo work shares this ticket")]

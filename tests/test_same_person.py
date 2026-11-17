@@ -21,9 +21,9 @@ NOW = datetime(2026, 9, 25, 5, 40, tzinfo=timezone.utc)
 LAPTOP = "dev@laptop.lan"
 
 
-def pr(repo, ref, *, author=LAPTOP, login="dev", head=NOW, touched=NOW):
+def pr(repo, ref, *, author=LAPTOP, login="dev", head=NOW, touched=NOW, url=None):
     return Change(repo=repo, ref=ref, tickets=(), kind="pr", author=author, login=login,
-                  updated_at=head, touched_at=touched)
+                  updated_at=head, touched_at=touched, url=url)
 
 
 def index(changes):
@@ -47,6 +47,41 @@ class TestPeople:
         people = People([pr("acme/web", "feat/a", author="ci@shared", login="ann"),
                          pr("acme/api", "feat/b", author="ci@shared", login="bob")])
         assert "bob" not in people.names(None, "ann")
+
+
+class TestOneEmailOnTwoForges:
+    """A laptop's default address signed a front end's pull request on one forge
+    and a service's on another, under a different login on each; the email was
+    taken for a shared machine and the two halves of one chain were strangers."""
+
+    GH, BB = "https://github.com/acme/web/pull/1", "https://bitbucket.org/acme/api/pull-requests/2"
+
+    def test_a_login_on_each_forge_is_one_person(self):
+        people = People([pr("acme/web", "feat/a", login="dev-gh", url=self.GH),
+                         pr("acme/api", "feat/a", login="dev.bb", url=self.BB)])
+        assert {"dev-gh", "dev.bb", LAPTOP} <= people.names(None, "dev-gh")
+        assert people.same(pr("acme/web", "x", author=None, login="dev-gh"),
+                           pr("acme/api", "y", author=None, login="dev.bb"))
+
+    def test_two_logins_on_one_forge_still_tie_nothing(self):
+        people = People([pr("acme/web", "feat/a", login="ann", url=self.GH),
+                         pr("acme/api", "feat/b", login="bob", url="https://github.com/acme/api/pull/3"),
+                         pr("acme/svc", "feat/c", login="ann.b", url=self.BB)])
+        assert people.names(None, "ann") == {"ann"}
+
+    def test_an_unknown_forge_counts_on_every_forge(self):
+        people = People([pr("acme/web", "feat/a", login="ann", url=self.GH),
+                         pr("acme/api", "feat/b", login="bob")])
+        assert people.names(None, "ann") == {"ann"}
+
+    def test_the_chain_is_paired_across_forges(self):
+        a = pr("acme/web", "feat/token-passthrough", login="dev-gh", url=self.GH)
+        b = pr("acme/api", "feat/token-passthrough", author="ci@shared", login="dev.bb", url=self.BB)
+        c = pr("acme/api", "fix/other", login="dev.bb", url=self.BB, head=NOW - timedelta(days=9),
+               touched=NOW - timedelta(days=9))
+        got = index([a, b, c]).siblings_near(author=None, login="dev-gh", at=NOW,
+                                             ref="feat/token-passthrough", exclude_repo="acme/web")
+        assert [(s.change.repo, s.change.ref) for s in got] == [("acme/api", "feat/token-passthrough")]
 
 
 class TestNearByEitherMoment:

@@ -13,12 +13,17 @@ from ledger.config import Config
 
 NOW = datetime.now(timezone.utc)
 
-# Read out of a shared events table, so no topic or route names them: only
-# the names both diffs use.
+# The producer publishes the event and stamps a column; the consumer
+# dispatches on the event's type and reads the column.
 PRODUCER = [ChangedFile(path="app/events.py",
-                        body="+    row['documentUploadedAt'] = now()\n")]
+                        body="+    row['documentUploadedAt'] = now()\n"
+                             "+    producer.send('document.uploaded', row)\n")]
 CONSUMER = [ChangedFile(path="app/cascade.py",
-                        body="+    if row['documentUploadedAt'] > since:\n+        route(row)\n")]
+                        body="+    if data['event_type'] == 'document.uploaded':\n+        route(data)\n")]
+# Read out of a shared events table, so no topic or route names them: only
+# the names both diffs use. Field names are common across an estate.
+NAMES_ONLY = [ChangedFile(path="app/cascade.py",
+                          body="+    if row['documentUploadedAt'] > since:\n+        route(row)\n")]
 UNRELATED = [ChangedFile(path="app/theme.css", body="+.button { color: red }\n")]
 
 
@@ -54,8 +59,20 @@ def test_a_cited_ticket_whose_diffs_meet_is_an_item(tmp_path, monkeypatch):
     monkeypatch.setenv("LEDGER_CACHE_DIR", "off")
     b = brief(*estate(tmp_path, CONSUMER))
     got = [i for i in b.impacts if i.repo == "comms"]
-    assert got and got[0].how.startswith("cites XY-531")
+    # The topic now links them on its own; the citation adds no second item.
+    assert len(got) == 1 and got[0].over == "topic `document.uploaded`"
     assert b.recommendation == "review_with"
+
+
+def test_a_cited_ticket_whose_diffs_share_only_names_is_a_note(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEDGER_CACHE_DIR", "off")
+    cfg, vcs = estate(tmp_path, NAMES_ONLY)
+    vcs._diffs["core"] = [ChangedFile(path="app/events.py",
+                                      body="+    row['documentUploadedAt'] = now()\n")]
+    b = brief(cfg, vcs)
+    assert [i for i in b.impacts if i.repo == "comms"] == []
+    assert any(r.startswith("note:") and "comms feature/XY-531-cascade" in r for r in b.reasons)
+    assert b.recommendation != "review_with"
 
 
 def test_a_cited_ticket_whose_diffs_do_not_meet_is_dropped(tmp_path, monkeypatch):
@@ -71,7 +88,7 @@ def test_it_is_found_from_the_other_side_too(tmp_path, monkeypatch):
     b = service.compute_brief(cfg, [vcs], "comms", "feature/XY-531-cascade",
                               lambda repos: service.LiveIndex(vcs, repos, None))
     got = [i for i in b.impacts if i.repo == "core"]
-    assert got and got[0].how.startswith("cites XY-531: its pull request's description")
+    assert len(got) == 1 and got[0].over == "topic `document.uploaded`"
 
 
 def test_stored_contracts_keep_their_direction():
