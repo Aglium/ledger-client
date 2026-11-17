@@ -191,3 +191,96 @@ def test_a_php_array_value_on_the_next_line_is_not_a_function():
     after = "<?php\nreturn [\n    'services' =>\n        ['a', 'b'],\n];\n"
     got = places_of(after, "@@ -4 +4 @@\n-        ['a'],\n+        ['a', 'b'],")
     assert all(p[0] != "in" for p in got.at)
+
+
+class TestNoPlaceFromACommonLine:
+    """Three lines every change has: a new entry's own keys, the closing line
+    of a signature, and a block only re-wrapped."""
+
+    REGISTRY = "PAGES = [\n    Page(\n        slug=\"a\",\n        path=\"/a\",\n    ),\n]\n"
+
+    def add_page(self, name):
+        after = self.REGISTRY.replace("]\n", f"    Page(\n        slug=\"{name}\",\n        path=\"/{name}\",\n    ),\n]\n")
+        return places_of(after, "@@ -5,0 +6,4 @@\n" + "\n".join(
+            "+" + line for line in after.splitlines()[5:9]))
+
+    def test_two_new_entries_of_one_list_do_not_meet(self):
+        same, after = meet(self.add_page("x"), self.add_page("y"))
+        assert same == []
+        assert after                                    # still a merge conflict to note
+
+    def test_a_signature_s_closing_line_is_its_function(self):
+        base = "class S:\n    def a(\n        self,\n    ) -> None:\n        pass\n"
+
+        def new_method(name):
+            after = base + f"\n    def {name}(\n        self,\n    ) -> None:\n        pass\n"
+            return places_of(after, "@@ -5,0 +6,5 @@\n" + "\n".join(
+                "+" + line for line in after.splitlines()[5:10]))
+        a, b = new_method("b"), new_method("c")
+        assert ("in", "class S:", "def b(") in a.at
+        assert meet(a, b)[0] == []
+
+    def test_whitespace_only_is_no_change(self):
+        after = "class C {\n    function send() {\n        try { go(); } catch (E $e) {\n        }\n    }\n}\n"
+        got = places_of(after, "@@ -3 +3,2 @@\n-        try { go(); } catch (E $e) {}\n"
+                               "+        try { go(); } catch (E $e) {\n+        }")
+        assert got.at == set()
+
+    def test_the_same_edit_on_both_sides_is_not_a_meeting(self):
+        after = "def f():\n    a = 2\n"
+        a = places_of(after, "@@ -2 +2 @@\n-    a = 1\n+    a = 2")
+        b = places_of(after, "@@ -2 +2 @@\n-    a = 1\n+    a = 2")
+        assert meet(a, b)[0] == []
+        c = places_of("def f():\n    a = 3\n", "@@ -2 +2 @@\n-    a = 1\n+    a = 3")
+        assert meet(a, c)[0] == [("in", "def f():")]
+
+    def test_a_call_rewritten_inside_a_function_is_still_that_function(self):
+        after = "def f():\n    send(\n        to=1,\n    )\n"
+        got = places_of(after, "@@ -2,3 +2,3 @@\n-    post(\n-        to=0,\n-    )\n"
+                               "+    send(\n+        to=1,\n+    )")
+        assert ("in", "def f():") in got.at
+
+
+def test_a_squashed_copy_of_their_work_is_the_same_work(tmp_path, work):
+    """Their branch is still open; its work reached `main` as one squashed
+    commit, and this change is built on that `main`."""
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")})
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=3)\n")},
+           base="feat/theirs")
+    git(work, "merge", "-q", "--squash", "feat/theirs")
+    git(work, "commit", "-qm", "Squashed theirs")
+    commit(work, "feat/mine", {"errors.py": (work / "errors.py").read_text().replace(
+        "return e.code", "return e.code or 500")})
+    b = brief(tmp_path, work)
+    assert "feat/theirs" not in listed(b)
+    assert any(r.startswith("note: the same work in another form") and "feat/theirs" in r for r in b.reasons)
+
+
+def test_a_port_with_one_commit_of_its_own_meets_only_where_that_commit_does(tmp_path, work):
+    """Three of four commits are already this change's; the fourth is elsewhere."""
+    ported = ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")
+    commit(work, "feat/mine", {"errors.py": ported})
+    commit(work, "feat/theirs", {"errors.py": ported.replace("code = 409", "code = 422")})
+    b = brief(tmp_path, work)
+    assert "feat/theirs" not in listed(b)
+
+
+def test_prose_never_leads_a_conflict_in_code(tmp_path, work, monkeypatch):
+    guide = "".join(f"Paragraph {n} of the guide.\n\n" for n in range(6))
+    (work / "GUIDE.md").write_text(guide)
+    git(work, "add", "-A"); git(work, "commit", "-qm", "guide")
+    edited = guide.replace("of the guide", "of the new guide")
+    commit(work, "feat/mine", {"GUIDE.md": edited,
+                               "errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")})
+    commit(work, "feat/docs", {"GUIDE.md": guide.replace("of the guide", "of the other guide")})
+    commit(work, "feat/code", {"errors.py": ERRORS.replace("    return e.code\n", "    return 0\n")})
+    monkeypatch.setattr(service, "SAME_REPO_SHOWN", 1)
+    assert list(listed(brief(tmp_path, work))) == ["feat/code"]
+
+
+def test_a_line_the_file_already_had_is_not_their_work_being_here(tmp_path, work):
+    """Their only addition is a line this file has elsewhere: not the same work."""
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e)\n    return e.code\n")})
+    commit(work, "feat/mine", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")})
+    b = brief(tmp_path, work)
+    assert not any("same work" in r and "feat/theirs" in r for r in b.reasons)

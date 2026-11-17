@@ -1647,6 +1647,14 @@ SAME_REPO_HOT = 5
 #: Past this many characters a file's places are not read (`core.places` walks
 #: up from each changed line); such a file is generated or vendored.
 PLACES_MAX = 1_000_000
+#: Shared files whose places are read, per open change: the ones fewest other
+#: changes share first. A long-lived branch sharing 500 files with each of 30
+#: others read 2 x 500 files 30 times over and took most of a minute.
+PLACES_FILES = 20
+#: (repo, this head, their head, their base, files) -> how they meet. Commits
+#: do not change, and a run over every open change compares each pair twice.
+_PLACE_VERDICTS: dict[tuple, object] = {}
+_PLACE_VERDICTS_MAX = 20_000
 
 
 def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str, subj,
@@ -1752,7 +1760,8 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         verdict = None
         if can_read and reads < cap:
             reads += 1
-            verdict = _compare_places(cfg, vcs, subj, repo, ref, c, shared, mine_by_path, mine_at,
+            readable = sorted(shared, key=lambda p: (p in hot, users.get(p, 0), p))[:PLACES_FILES]
+            verdict = _compare_places(cfg, vcs, subj, repo, ref, c, readable, mine_by_path, mine_at,
                                       texts=texts, uncommitted=uncommitted)
         if verdict is None:
             # Not readable: the file is all there is, and a crowded one is not enough.
@@ -1769,9 +1778,13 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             met.append((c, shared, tickets, detail))
         elif kind == "inserts":
             mechanical.append((c, detail))
-    # Where they meet first, then how much of the change they share; the
-    # newest first among equals, as listed.
-    met.sort(key=lambda t: (-len(t[3]), -len(t[1])))
+    # Where they meet in code first, then anywhere, then how much of the
+    # change they share; the newest first among equals, as listed. Prose
+    # never leads: forty-eight paragraphs of an agents' guide both branches
+    # carry put the real conflict of a publisher fourth.
+    from ledger.core.effect import _PROSE
+    met.sort(key=lambda t: (-sum(1 for p, _l in t[3] if not _PROSE.search(p)),
+                            -len(t[3]), -len(t[1])))
 
     added: list[Impact] = []
     for c, shared, tickets, places in met[:SAME_REPO_SHOWN]:
@@ -1859,8 +1872,9 @@ def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list
                     uncommitted=frozenset()):
     """How an open change of the same files meets this one.
 
-    `("same_work", None)`: one's commits are all in the other, by ancestry or
-    as the same patch -- a port, a stacked pull request, a duplicate branch.
+    `("same_work", None)`: one's work is all in the other, by ancestry, as the
+    same patches, or as a merge that would change nothing -- a port, a squash,
+    a stacked pull request, a duplicate branch.
     `("places", [(path, label)])`: both change the same function, key or line.
     `("inserts", path)`: both only add next to the same unchanged line.
     `("apart", None)`: same files, different places. None: could not be read.
@@ -1873,31 +1887,55 @@ def _compare_places(cfg: Config, vcs, subj, repo: str, ref: str, c, shared: list
     base = _own_base_of(cfg, vcs, subj, repo, c)
     if base is None:
         return None
+    key = None
+    if texts is None:               # a client's own copy may not be pushed: never cached
+        try:
+            key = (repo, vcs.head_sha(repo, ref), vcs.head_sha(repo, c.ref), base, subj.base,
+                   tuple(shared))
+        except ForgeUnavailable:
+            key = None
+    if key is not None and key in _PLACE_VERDICTS:
+        return _PLACE_VERDICTS[key]
+    got = _read_places(vcs, subj, repo, ref, c, base, shared, mine_by_path, mine_at, texts)
+    if key is not None and got is not None:
+        if len(_PLACE_VERDICTS) >= _PLACE_VERDICTS_MAX:
+            _PLACE_VERDICTS.clear()
+        _PLACE_VERDICTS[key] = got
+    return got
+
+
+def _read_places(vcs, subj, repo: str, ref: str, c, base: str, shared: list[str],
+                 mine_by_path: dict, mine_at: dict, texts: dict | None):
+    """`_compare_places` once its inputs are known not to be cached."""
+    from ledger.core.places import label, meet, places_of
     contained = vcs.work_contained(repo, ref, c.ref, base)
     if contained is None:
         return None
     if contained or (subj.own_commits and vcs.work_contained(repo, c.ref, ref, subj.base)):
         return ("same_work", None)
     try:
-        theirs = {f.path: f for f in vcs.changed_files(repo, base, c.ref) if f.path in set(shared)}
+        theirs = {f.path: f for f in vcs.changed_files_in(repo, base, c.ref, list(shared))}
+        wanted = [p for p in shared if p in theirs and p in mine_by_path]
+        # The client's own copy when it sent one: the mirror may not have its
+        # latest push. The rest, and theirs, in one read each.
+        need = [p for p in wanted if p not in mine_at and not (texts and p in texts)]
+        mine_texts = {**(vcs.read_files(repo, ref, need) if need else {}),
+                      **{p: texts[p] for p in wanted if texts and p in texts}}
+        their_texts = vcs.read_files(repo, c.ref, wanted) if wanted else {}
     except ForgeUnavailable:
         return None
     places, inserts = [], []
-    for path in shared:
-        f = theirs.get(path)
-        own = mine_by_path.get(path)
-        if f is None or own is None:
-            continue
-        try:
-            if path not in mine_at:
-                # The client's own copy when it sent one: the mirror may not
-                # have its latest push.
-                after = texts.get(path) if texts and path in texts else vcs.read_file(repo, ref, path)
-                mine_at[path] = places_of(after, own.body or "") if len(after) <= PLACES_MAX else None
-            theirs_after = vcs.read_file(repo, c.ref, path)
-            at = places_of(theirs_after, f.body or "") if len(theirs_after) <= PLACES_MAX else None
-        except ForgeUnavailable:
+    for path in wanted:
+        f, own = theirs[path], mine_by_path[path]
+        if path not in mine_at:
+            if path not in mine_texts:
+                return None
+            after = mine_texts[path]
+            mine_at[path] = places_of(after, own.body or "") if len(after) <= PLACES_MAX else None
+        if path not in their_texts:
             return None
+        theirs_after = their_texts[path]
+        at = places_of(theirs_after, f.body or "") if len(theirs_after) <= PLACES_MAX else None
         if mine_at[path] is None or at is None:
             return None             # generated or vendored size: the file is all there is
         same, after = meet(mine_at[path], at)

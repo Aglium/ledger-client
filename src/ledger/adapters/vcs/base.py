@@ -229,6 +229,12 @@ class VcsAdapter(ABC):
         """Files changed between `base` and `head`, with hunk bodies."""
         raise ForgeUnavailable(self.source, "this source cannot produce diffs")
 
+    def changed_files_in(self, repo: str, base: str, head: str, paths: list[str]) -> list[ChangedFile]:
+        """`changed_files`, of these paths only. A source that can narrow the
+        diff itself (git: `-- paths`) does not read the rest."""
+        want = set(paths)
+        return [f for f in self.changed_files(repo, base, head) if f.path in want]
+
     def grep_paths(self, repo: str, ref: str, needles: list[str], paths: list[str] | None = None) -> list[str]:
         """Files at `ref` containing any of `needles`, case-insensitively.
 

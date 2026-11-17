@@ -130,6 +130,74 @@ def _is_ancestor(repo: Path, a: str, b: str) -> bool:
     return r.returncode == 0
 
 
+def _read_blobs(p: Path, rev: str, paths: list[str], source: str = "localgit") -> dict[str, str]:
+    """Files at `rev`, read through one `git cat-file --batch`; binary and non-UTF-8 left out."""
+    if not paths:
+        return {}
+    request = "".join(f"{rev}:{path}\n" for path in paths).encode()
+    try:
+        r = subprocess.run(["git", "-C", str(p), "cat-file", "--batch"],
+                           input=request, capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ForgeUnavailable(source, str(e)) from e
+    if r.returncode != 0:
+        raise ForgeUnavailable(source, f"cat-file --batch failed in {p.name}")
+    out: dict[str, str] = {}
+    data, pos = r.stdout, 0
+    for path in paths:
+        nl = data.find(b"\n", pos)
+        if nl < 0:
+            break
+        header = data[pos:nl].decode(errors="replace")
+        pos = nl + 1
+        if header.endswith(" missing"):
+            continue
+        try:
+            _, _, size = header.rsplit(" ", 2)
+            size = int(size)
+        except ValueError:
+            break
+        blob = data[pos:pos + size]
+        pos += size + 1            # payload is followed by a newline
+        try:
+            out[path] = blob.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    return out
+
+
+#: Whether this git has `merge-tree --write-tree` (2.38+); None until asked.
+_MERGE_TREE: bool | None = None
+
+
+def _merges_to_itself(repo: Path, outer: str, inner: str) -> bool:
+    """Whether merging `inner` into `outer` leaves `outer`'s tree as it is.
+
+    False on a conflict, a different tree, or a git too old to merge without a
+    working copy -- that is, whenever it cannot say yes.
+    """
+    global _MERGE_TREE
+    if _MERGE_TREE is False:
+        return False
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "merge-tree", "--write-tree", "--no-messages",
+                            outer, inner], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if r.returncode not in (0, 1):
+        if "write-tree" in r.stderr or "usage" in r.stderr.lower():
+            _MERGE_TREE = False         # an older git: never ask again
+        return False
+    _MERGE_TREE = True
+    if r.returncode != 0:
+        return False                    # a conflict: not already there
+    merged = (r.stdout.split() or [""])[0]
+    try:
+        return merged == _git(repo, "rev-parse", f"{outer}^{{tree}}").strip()
+    except ForgeUnavailable:
+        return False
+
+
 def _patch_ids(repo: Path, args: list[str]) -> set[str]:
     """`git patch-id --stable` of the patches a `git log -p` or `git show` prints."""
     try:
@@ -536,6 +604,12 @@ class LocalGitAdapter(VcsAdapter):
         raise ForgeUnavailable(self.source, f"{repo_name_hint(p)}: cannot resolve ref {ref!r}")
 
     def changed_files(self, repo: str, base: str, head: str) -> list[ChangedFile]:
+        return self._changed(repo, base, head, None)
+
+    def changed_files_in(self, repo: str, base: str, head: str, paths: list[str]) -> list[ChangedFile]:
+        return self._changed(repo, base, head, list(paths)) if paths else []
+
+    def _changed(self, repo: str, base: str, head: str, paths: list[str] | None) -> list[ChangedFile]:
         p = self._path(repo)
         base, head = self._resolve_base(p, base, head), self._resolve(p, head)
         # merge-base, not a straight two-dot diff: comparing against the tip of
@@ -545,7 +619,7 @@ class LocalGitAdapter(VcsAdapter):
             merge_base = _git(p, "merge-base", base, head).strip()
         except ForgeUnavailable:
             merge_base = base
-        raw = _git(p, "diff", "--unified=0", f"{merge_base}..{head}")
+        raw = _git(p, "diff", "--unified=0", f"{merge_base}..{head}", *(["--", *paths] if paths else []))
         out: list[ChangedFile] = []
         path, buf = None, []
         for line in raw.splitlines():
@@ -710,6 +784,11 @@ class LocalGitAdapter(VcsAdapter):
                            f"^{outer_ref}").split()
             if not missing:
                 return True
+            # Merged into `outer`, it would change nothing: its work is there
+            # already, whatever the commits -- a squash of it, a port that
+            # gathered it into one commit.
+            if _merges_to_itself(p, outer_ref, inner_ref) or self._hunks_in(p, outer_ref, inner_ref, base):
+                return True
             if len(missing) > _CONTAINED_MAX:
                 return False
             paths = [x for x in _git(p, "diff", "--name-only", f"{base}...{inner_ref}").splitlines() if x]
@@ -723,6 +802,47 @@ class LocalGitAdapter(VcsAdapter):
         except ForgeUnavailable:
             return None
         return bool(ours) and ours <= theirs
+
+    def _hunks_in(self, p: Path, outer: str, inner: str, base: str) -> bool:
+        """Whether every line block `inner` adds over `base` is in `outer`'s files.
+
+        A squash or a port carries the same lines under other commits; when
+        `outer` then edits next to them, a three-way merge calls it a conflict
+        although nothing of `inner` is missing.
+        """
+        try:
+            fork = _git(p, "merge-base", base, inner).strip()
+            raw = _git(p, "diff", "--unified=0", "--no-renames", f"{fork}..{inner}")
+        except ForgeUnavailable:
+            return False
+        blocks: dict[str, list[str]] = {}
+        path, plus = None, []
+
+        def close():
+            if path is not None and plus:
+                blocks.setdefault(path, []).append("\n".join(plus))
+        for line in raw.splitlines():
+            if line.startswith("diff --git "):
+                close()
+                path, plus = line.split(" b/", 1)[-1], []
+            elif line.startswith("@@"):
+                close()
+                plus = []
+            elif line.startswith("+") and not line.startswith("+++"):
+                plus.append(line[1:])
+        close()
+        if not blocks or len(blocks) > _CONTAINED_PATHS:
+            return False
+        try:
+            texts = _read_blobs(p, outer, sorted(blocks), self.source)
+            theirs = _read_blobs(p, inner, sorted(blocks), self.source)
+        except ForgeUnavailable:
+            return False
+        # As many times as `inner` has it: a `return None` it adds is not
+        # "there" because the file had another one already.
+        return all(path in texts and path in theirs
+                   and all(texts[path].count(b) >= theirs[path].count(b) for b in bs)
+                   for path, bs in blocks.items())
 
     def list_tree(self, repo: str, ref: str) -> list[str]:
         p = self._path(repo)
@@ -810,38 +930,7 @@ class LocalGitAdapter(VcsAdapter):
         if not paths:
             return {}
         p = self._path(repo)
-        rev = self._resolve(p, ref)
-        request = "".join(f"{rev}:{path}\n" for path in paths).encode()
-        try:
-            r = subprocess.run(["git", "-C", str(p), "cat-file", "--batch"],
-                               input=request, capture_output=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise ForgeUnavailable(self.source, str(e)) from e
-        if r.returncode != 0:
-            raise ForgeUnavailable(self.source, f"cat-file --batch failed in {repo}")
-
-        out: dict[str, str] = {}
-        data, pos = r.stdout, 0
-        for path in paths:
-            nl = data.find(b"\n", pos)
-            if nl < 0:
-                break
-            header = data[pos:nl].decode(errors="replace")
-            pos = nl + 1
-            if header.endswith(" missing"):
-                continue
-            try:
-                _, _, size = header.rsplit(" ", 2)
-                size = int(size)
-            except ValueError:
-                break
-            blob = data[pos:pos + size]
-            pos += size + 1            # payload is followed by a newline
-            try:
-                out[path] = blob.decode("utf-8")
-            except UnicodeDecodeError:
-                continue
-        return out
+        return _read_blobs(p, self._resolve(p, ref), paths, self.source)
 
     def _git_dir(self, p: Path) -> Path:
         return p if self._bare(p) else p / ".git"

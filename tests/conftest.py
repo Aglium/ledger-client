@@ -7,3 +7,13 @@ def _nothing_leaves_the_test(tmp_path, monkeypatch):
     monkeypatch.setenv("LEDGER_CACHE_DIR", str(tmp_path / "scan-cache"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("LEDGER_DATA_DIR", str(tmp_path / "ledger-data"))
+
+
+@pytest.fixture(autouse=True)
+def _no_answer_carries_over():
+    """Commits made the same way in two tests have the same ids: an answer
+    remembered by commit in one must not be served in the next."""
+    from ledger import service
+    service._PLACE_VERDICTS.clear()
+    yield
+    service._PLACE_VERDICTS.clear()
