@@ -166,36 +166,51 @@ def _read_blobs(p: Path, rev: str, paths: list[str], source: str = "localgit") -
     return out
 
 
+#: A line with a word or number in it; `}` or `),` alone says nothing.
+_SAYS = re.compile(r"\w")
+
+
+def _blocks_in(lines: list[str], block: tuple[str, ...]) -> int:
+    """How many times `block` occurs in `lines` as consecutive whole lines."""
+    n = len(block)
+    if not n:
+        return 0
+    first = block[0]
+    return sum(1 for k in range(len(lines) - n + 1)
+               if lines[k] == first and tuple(lines[k:k + n]) == block)
+
+
 #: Whether this git has `merge-tree --write-tree` (2.38+); None until asked.
 _MERGE_TREE: bool | None = None
 
 
-def _merges_to_itself(repo: Path, outer: str, inner: str) -> bool:
+def _merges_to_itself(repo: Path, outer: str, inner: str) -> bool | None:
     """Whether merging `inner` into `outer` leaves `outer`'s tree as it is.
 
-    False on a conflict, a different tree, or a git too old to merge without a
-    working copy -- that is, whenever it cannot say yes.
+    True: it would change nothing. False: it merges cleanly into a different
+    tree, so `inner` has something `outer` lacks. None: a conflict, or a git
+    too old to merge without a working copy -- it cannot say.
     """
     global _MERGE_TREE
     if _MERGE_TREE is False:
-        return False
+        return None
     try:
         r = subprocess.run(["git", "-C", str(repo), "merge-tree", "--write-tree", "--no-messages",
                             outer, inner], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
     if r.returncode not in (0, 1):
         if "write-tree" in r.stderr or "usage" in r.stderr.lower():
             _MERGE_TREE = False         # an older git: never ask again
-        return False
+        return None
     _MERGE_TREE = True
     if r.returncode != 0:
-        return False                    # a conflict: not already there
+        return None                     # a conflict: the line blocks decide
     merged = (r.stdout.split() or [""])[0]
     try:
         return merged == _git(repo, "rev-parse", f"{outer}^{{tree}}").strip()
     except ForgeUnavailable:
-        return False
+        return None
 
 
 def _patch_ids(repo: Path, args: list[str]) -> set[str]:
@@ -787,7 +802,10 @@ class LocalGitAdapter(VcsAdapter):
             # Merged into `outer`, it would change nothing: its work is there
             # already, whatever the commits -- a squash of it, a port that
             # gathered it into one commit.
-            if _merges_to_itself(p, outer_ref, inner_ref) or self._hunks_in(p, outer_ref, inner_ref, base):
+            # The line blocks only where the merge cannot say: a clean merge
+            # into another tree is an answer, and costs one process, not ten.
+            merged = _merges_to_itself(p, outer_ref, inner_ref)
+            if merged or (merged is None and self._hunks_in(p, outer_ref, inner_ref, base)):
                 return True
             if len(missing) > _CONTAINED_MAX:
                 return False
@@ -804,45 +822,67 @@ class LocalGitAdapter(VcsAdapter):
         return bool(ours) and ours <= theirs
 
     def _hunks_in(self, p: Path, outer: str, inner: str, base: str) -> bool:
-        """Whether every line block `inner` adds over `base` is in `outer`'s files.
+        """Whether `outer`'s files already hold what `inner` does over `base`.
 
         A squash or a port carries the same lines under other commits; when
         `outer` then edits next to them, a three-way merge calls it a conflict
-        although nothing of `inner` is missing.
+        although nothing of `inner` is missing. Every block of whole lines
+        `inner` adds is in `outer` as often as in `inner`, and every line it
+        removes is in `outer` no more often than in `inner` -- `timeout = 30`
+        is not inside `timeout = 300`, and a branch that mostly deletes is
+        not there until the deletions are.
         """
         try:
             fork = _git(p, "merge-base", base, inner).strip()
             raw = _git(p, "diff", "--unified=0", "--no-renames", f"{fork}..{inner}")
         except ForgeUnavailable:
             return False
-        blocks: dict[str, list[str]] = {}
-        path, plus = None, []
+        added: dict[str, list[tuple[str, ...]]] = {}
+        removed: dict[str, list[tuple[str, ...]]] = {}
+        path, plus, minus = None, [], []
 
         def close():
-            if path is not None and plus:
-                blocks.setdefault(path, []).append("\n".join(plus))
+            if path is not None:
+                if plus:
+                    added.setdefault(path, []).append(tuple(plus))
+                if minus:
+                    removed.setdefault(path, []).append(tuple(minus))
         for line in raw.splitlines():
             if line.startswith("diff --git "):
                 close()
-                path, plus = line.split(" b/", 1)[-1], []
+                path, plus, minus = line.split(" b/", 1)[-1], [], []
             elif line.startswith("@@"):
                 close()
-                plus = []
+                plus, minus = [], []
             elif line.startswith("+") and not line.startswith("+++"):
                 plus.append(line[1:])
+            elif line.startswith("-") and not line.startswith("---"):
+                minus.append(line[1:])
         close()
-        if not blocks or len(blocks) > _CONTAINED_PATHS:
+        paths = sorted(set(added) | set(removed))
+        if not paths or len(paths) > _CONTAINED_PATHS:
             return False
         try:
-            texts = _read_blobs(p, outer, sorted(blocks), self.source)
-            theirs = _read_blobs(p, inner, sorted(blocks), self.source)
+            texts = _read_blobs(p, outer, paths, self.source)
+            theirs = _read_blobs(p, inner, paths, self.source)
         except ForgeUnavailable:
             return False
-        # As many times as `inner` has it: a `return None` it adds is not
-        # "there" because the file had another one already.
-        return all(path in texts and path in theirs
-                   and all(texts[path].count(b) >= theirs[path].count(b) for b in bs)
-                   for path, bs in blocks.items())
+        outer_lines = {k: v.splitlines() for k, v in texts.items()}
+        inner_lines = {k: v.splitlines() for k, v in theirs.items()}
+        for path in paths:
+            o, i = outer_lines.get(path), inner_lines.get(path)
+            # As many times as `inner` has it: a `return None` it adds is not
+            # "there" because the file had another one already.
+            for b in added.get(path, ()):
+                if o is None or i is None or _blocks_in(o, b) < _blocks_in(i, b):
+                    return False
+            # A removed line, one by one: removals next to an edit come as one
+            # block with it, and that block is in neither file. Lines of only
+            # brackets or blanks say nothing either way.
+            for line in {x for b in removed.get(path, ()) for x in b if _SAYS.search(x)}:
+                if (o.count(line) if o is not None else 0) > (i.count(line) if i is not None else 0):
+                    return False
+        return True
 
     def list_tree(self, repo: str, ref: str) -> list[str]:
         p = self._path(repo)

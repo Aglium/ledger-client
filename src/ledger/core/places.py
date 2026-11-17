@@ -176,12 +176,21 @@ def places_of(after: str, body: str) -> Places:
         elif hunks and raw.startswith("-"):
             hunks[-1][2].append(raw[1:])
     text = "\n".join(lines)
+    tokens: set[str] | None = None      # the file's words, split once: a removed name is gone if absent
+
+    def still_there(name: str) -> bool:
+        nonlocal tokens
+        if not re.fullmatch(r"[\w$-]+", name):
+            return bool(re.search(rf"(?<![\w$-]){re.escape(name)}(?![\w$-])", text))
+        if tokens is None:
+            tokens = set(re.split(r"[^\w$-]+", text))
+        return name in tokens
     for start, count, gone in hunks:
         first = start - 1
         added = range(first, min(first + count, len(lines))) if count else range(0)
         for line in gone:
             name = _declared(line)
-            if name and _specific(name) and not re.search(rf"(?<![\w$-]){re.escape(name)}(?![\w$-])", text):
+            if name and _specific(name) and not still_there(name):
                 got.gone.add(name)
         for i in added:
             own = _declared(lines[i])

@@ -345,3 +345,54 @@ def test_beside_in_a_braced_language():
         "+" + line for line in after.splitlines()[8:13]))
     got = beside(mine, theirs)
     assert got and got[0][1] == ["calculateDelayMinutes"] and got[0][2]
+
+
+class TestWorkContainedByLines:
+    """A squash or port is found by its line blocks when the merge cannot say;
+    a line that only starts like theirs, or deletions not made, is not theirs."""
+
+    CONF = "def settings():\n    retries = 3\n    timeout = 10\n    return locals()\n"
+
+    def contained(self, tmp_path, work, mine, theirs, old_git):
+        (work / "conf.py").write_text(self.CONF)
+        git(work, "add", "-A"); git(work, "commit", "-qm", "conf")
+        commit(work, "feat/mine", {"conf.py": mine})
+        commit(work, "feat/theirs", {"conf.py": theirs})
+        import ledger.adapters.vcs.localgit as lg
+        saved = lg._MERGE_TREE
+        lg._MERGE_TREE = False if old_git else saved
+        try:
+            root = tmp_path / "m"
+            subprocess.run(["git", "clone", "-q", "--mirror", str(work), str(root / "core.git")], check=True)
+            return LocalGitAdapter(root).work_contained("core", "feat/mine", "feat/theirs", "main")
+        finally:
+            lg._MERGE_TREE = saved
+
+    @pytest.mark.parametrize("old_git", [False, True])
+    def test_a_longer_value_is_not_the_same_line(self, tmp_path, work, old_git):
+        assert not self.contained(tmp_path, work, self.CONF.replace("10", "300"),
+                                  self.CONF.replace("10", "30"), old_git)
+
+    @pytest.mark.parametrize("old_git", [False, True])
+    def test_deletions_not_made_here_are_not_here(self, tmp_path, work, old_git):
+        theirs = self.CONF.replace("    retries = 3\n", "").replace("10", "20")
+        mine = self.CONF.replace("10", "20").replace("    return", "    # all\n    return")
+        assert not self.contained(tmp_path, work, mine, theirs, old_git)
+
+    @pytest.mark.parametrize("old_git", [False, True])
+    def test_their_lines_and_deletions_both_here_are_the_same_work(self, tmp_path, work, old_git):
+        theirs = self.CONF.replace("    retries = 3\n", "").replace("10", "20")
+        mine = theirs.replace("    return", "    # all\n    return")
+        assert self.contained(tmp_path, work, mine, theirs, old_git)
+
+
+def test_a_file_past_the_read_cap_still_counts(tmp_path, work, monkeypatch):
+    """Only the first files shared are read for places; apart there is not
+    apart in the file that was never read."""
+    (work / "z.py").write_text("LIMIT = 1\n")
+    git(work, "add", "-A"); git(work, "commit", "-qm", "z")
+    commit(work, "feat/mine", {"errors.py": ERRORS.replace("code = 404", "code = 410"), "z.py": "LIMIT = 2\n"})
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("return e.code", "return 0"), "z.py": "LIMIT = 3\n"})
+    monkeypatch.setattr(service, "PLACES_FILES", 1)
+    got = listed(brief(tmp_path, work))
+    assert "feat/theirs" in got and "z.py" in got["feat/theirs"].how

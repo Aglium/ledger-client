@@ -101,6 +101,8 @@ class TestCitationsByNamesOnly:
         assert b.impacts == [] and b.recommendation == "proceed" and b.confidence == "high"
         assert any(r.startswith("note:") and "acme-web feat/abc-2-form" in r and "recipientid" in r
                    for r in b.reasons)
+        assert not any(r.startswith("no cross-repo work shares this ticket") for r in b.reasons)
+        assert any(r.startswith("nothing elsewhere meets this change's diff") for r in b.reasons)
 
     def test_a_shared_contract_is_an_item(self):
         b = self.brief()
@@ -266,3 +268,22 @@ class TestEventKindsSpelledAsTypes:
 
     def test_the_same_shape_elsewhere_is_no_topic(self):
         assert contracts_of("svc", [ChangedFile("app/log.py", '+log = getLogger("Billing.Export")\n')]) == set()
+
+
+class TestBrokerKeysAndCatalogues:
+    def topics(self, path, text):
+        from ledger.core.contracts import discover_in_text
+        return {e.contract.name for e in discover_in_text("acme-api", path, text)
+                if e.contract.surface == Surface.TOPIC}
+
+    def test_a_routing_key_names_its_topic(self):
+        line = "channel.basic_publish(exchange='x', routing_key='orders.created', body=b)\n"
+        assert self.topics("app/bus.py", line) == {"orders.created"}
+
+    def test_an_attribute_key_still_does_not(self):
+        assert self.topics("app/trace.py", "KEY_SERVICE_NAME = 'service.name'\n") == set()
+
+    def test_a_validation_message_key_is_no_event(self):
+        assert self.topics("app/forms.py", "error_message = 'Validation.Required'\n") == set()
+        assert self.topics("Resources/Messages.resx",
+                           '<data name="Event.Created"><value>Done</value></data>\n') == set()

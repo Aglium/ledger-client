@@ -41,28 +41,52 @@ def noreply_login(email: str | None) -> str | None:
     return m.group(1).lower() if m else None
 
 
+def _one_per_forge(logins: dict[str, set]) -> bool:
+    """At most one of these logins on any forge; a login on an unknown forge
+    (None) counts on every forge."""
+    known = {f for fs in logins.values() for f in fs if f is not None} or {None}
+    return all(sum(1 for fs in logins.values() if f in fs or None in fs) <= 1 for f in known)
+
+
 class People:
     """Names that are one person, learned from changes that carry two of them."""
 
     def __init__(self, changes=()):
         logins_of: dict[str, dict[str | None, set[str]]] = defaultdict(lambda: defaultdict(set))
+        forges_of: dict[str, set[str | None]] = defaultdict(set)
         for c in changes:
             login, email = _norm(getattr(c, "login", None)), _norm(getattr(c, "author", None))
             if login and email and email != login:
                 logins_of[email][forge_of(c)].add(login)
-        #: email -> its logins, one per forge. An email with two logins on one
-        #: forge is nobody's; a pull request whose forge is unknown counts on
-        #: every forge.
-        self.logins_by_email: dict[str, set[str]] = {}
-        for e, by_forge in logins_of.items():
-            unknown = by_forge.get(None, set())
-            forges = [f for f in by_forge if f is not None] or [None]
-            if all(len(by_forge.get(f, set()) | unknown) == 1 for f in forges):
-                self.logins_by_email[e] = set().union(*by_forge.values())
-        self.emails_of: dict[str, set[str]] = defaultdict(set)
-        for e, logins in self.logins_by_email.items():
-            for login in logins:
-                self.emails_of[login].add(e)
+                forges_of[login].add(forge_of(c))
+        # An email with two logins on one forge is nobody's; a pull request
+        # whose forge is unknown counts on every forge.
+        links = {e: set().union(*by_forge.values()) for e, by_forge in logins_of.items()
+                 if _one_per_forge({lg: forges_of[lg] for ls in by_forge.values() for lg in ls})}
+        # One person is every name the links reach -- unless that reaches two
+        # logins on one forge: two emails each tied to `ann` and `bob` on
+        # GitHub through one Bitbucket login made them one person. Such a
+        # group's links are dropped and each name stands alone.
+        parent: dict[str, str] = {}
+
+        def root(x: str) -> str:
+            while parent.setdefault(x, x) != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        for e, logins in links.items():
+            for lg in logins:
+                parent[root(lg)] = root(e)
+        groups: dict[str, set[str]] = defaultdict(set)
+        for x in list(parent):
+            groups[root(x)].add(x)
+        #: name -> every name of that person, itself included.
+        self.person: dict[str, set[str]] = {}
+        for members in groups.values():
+            logins = {m: forges_of[m] for m in members if m in forges_of}
+            if _one_per_forge(logins):
+                for m in members:
+                    self.person[m] = members
 
     def names(self, author: str | None, login: str | None = None) -> set[str]:
         """Every name the person behind `author` (and `login`) goes by."""
@@ -74,15 +98,8 @@ class People:
             person = noreply_login(n)
             if person:
                 out.add(person)
-        # A login's emails, those emails' logins on the other forges, and so
-        # on: every step is an email seen under one login per forge.
-        for _ in range(3):
-            more = set()
-            for n in out:
-                more |= self.emails_of.get(n, set()) | self.logins_by_email.get(n, set())
-            if more <= out:
-                break
-            out |= more
+        for n in list(out):
+            out |= self.person.get(n, set())
         return out
 
     def same(self, a, b) -> bool:

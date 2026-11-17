@@ -64,8 +64,13 @@ _TOPIC = re.compile(r"['\"]((?:[a-z][a-z0-9_]*)(?:\.[a-z][a-z0-9_]*){1,5})['\"]"
 #: A topic only where something says it is an event (`_EVENT_HINT`): the same
 #: shape is a namespace or a log category everywhere else.
 _EVENT_KIND = re.compile(r"['\"]([A-Z][A-Za-z0-9]*(?:\.[A-Z][A-Za-z0-9]*){1,2})['\"]")
-_EVENT_HINT = re.compile(r"(?i)event|topic|message|command|webhook|kafka|rabbit|queue|broker|"
+#: Not `message` or `command`: a validation message key (`"Validation.Required"`)
+#: and a console command's name have the same shape.
+_EVENT_HINT = re.compile(r"(?i)event|topic|webhook|kafka|rabbit|queue|broker|"
                          r"consumer|producer|publisher|subscriber|listener")
+#: Translation and resource catalogues: every key in them is dotted.
+_CATALOGUE = re.compile(r"\.(resx|po|pot|xlf|xliff|strings|properties|arb)$|(^|/)(messages|translations?|"
+                        r"locales?|lang|i18n)(/|[._-][^/]*$)", re.I)
 #: Choosing what to do by an event's kind is reading it: `if event_type ==
 #: 'x.y'`, `kind in ('x.y', ...)`, `case 'x.y':`.
 _DISPATCH = re.compile(
@@ -81,6 +86,8 @@ _MANIFEST = re.compile(
 _KEY_CONSTANT = re.compile(
     r"(?i)(?:^|[^\w])(?:\w*_)?(?:key|keys|attr|attrs|attribute|attributes|label|labels|header|headers|"
     r"field|fields|param|params)(?:_\w*)?\s*(?::[^=]*)?=\s*$")
+#: A broker's own keys name the topic: `routing_key='orders.created'`.
+_BROKER_KEY = re.compile(r"(?i)\b(?:routing|binding)_?key\s*(?::[^=]*)?=\s*$")
 #: Extensions and dotted module paths that look like topics but are not.
 _NOT_TOPIC = re.compile(r"\.(py|json|ya?ml|md|txt|sql|html?|jsx?|tsx?|csv|ini|cfg|toml|lock|env|log)$", re.I)
 #: A Go template's own names: `{{- define "app.chart" -}}`, `{{ include
@@ -392,15 +399,16 @@ def discover_in_text(repo: str, path: str, text: str, *,
         prefixes = router_prefixes(text) if ("APIRouter" in text or "Blueprint" in text) else {}
 
     manifest = bool(_MANIFEST.search(path))
+    catalogue = bool(_CATALOGUE.search(path))
     event_file = bool(_EVENT_HINT.search(path))
     for i, line in enumerate(lines):
         window = "\n".join(lines[max(0, i - 3):i + 4])
-        found = [] if manifest else [(m, False) for m in _TOPIC.finditer(line)]
-        if not manifest:
+        found = [] if manifest else list(_TOPIC.finditer(line))
+        if not (manifest or catalogue):
             hinted = event_file or bool(_EVENT_HINT.search(line))
-            found += [(m, True) for m in _EVENT_KIND.finditer(line)
+            found += [m for m in _EVENT_KIND.finditer(line)
                       if hinted or _DISPATCH.search(line[:m.start()])]
-        for m, _kind in found:
+        for m in found:
             name = m.group(1)
             if _NOT_TOPIC.search(name) or _HOSTNAME.search(name) or name.count(".") > 5:
                 continue
@@ -408,7 +416,7 @@ def discover_in_text(repo: str, path: str, text: str, *,
                 continue
             if low.endswith(".tpl") or _TEMPLATE_NAME_BEFORE.search(line[:m.start()]):
                 continue
-            if _KEY_CONSTANT.search(line[:m.start()]):
+            if _KEY_CONSTANT.search(line[:m.start()]) and not _BROKER_KEY.search(line[:m.start()]):
                 continue
             out.append(ContractEdge(repo, ContractRef(Surface.TOPIC, name),
                                     _direction(line, window, line[:m.start()]), path, line.strip()[:200]))

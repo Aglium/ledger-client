@@ -1623,6 +1623,11 @@ def _keep_confirmed_citations(b: ImpactBrief, cited: list[Impact]) -> None:
     kept = [i for i in cited if i.over]
     named = [i for i in cited if not i.over and _specific(i.shares or [])]
     b.impacts.extend(kept)
+    if named and not kept:
+        # Read beside the note, "no cross-repo work shares this ticket" said
+        # there was none directly above the work it names.
+        b.reasons = [("nothing elsewhere meets this change's diff" + r[len("no cross-repo work shares this ticket"):])
+                     if r.startswith("no cross-repo work shares this ticket") else r for r in b.reasons]
     for i in named:
         b.reasons.append(
             f"note: a ticket a pull request description names ({', '.join(i.shared_tickets or [])}) "
@@ -1765,7 +1770,7 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     mine_by_path = {f.path: f for f in mine}
     reads = 0
     for c, shared, tickets in found:
-        verdict = None
+        verdict, readable = None, shared
         if can_read and reads < cap:
             reads += 1
             readable = sorted(shared, key=lambda p: (p in hot, users.get(p, 0), p))[:PLACES_FILES]
@@ -1778,6 +1783,13 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
                 met.append((c, kept, tickets, [], None))
             continue
         kind, detail = verdict
+        # Past `PLACES_FILES` the rest was not read: "apart" or "only next to
+        # each other" speaks for the files read, and an unread one may be
+        # where they meet. Those stay a file-level item, as if unreadable.
+        unread = [p for p in shared if p not in readable and p not in hot]
+        if unread and kind in ("apart", "inserts"):
+            met.append((c, unread, tickets, [], None))
+            continue
         if kind == "apart" and tickets:
             ticket_only.append((c, tickets))
         elif kind == "apart":

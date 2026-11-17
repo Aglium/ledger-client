@@ -69,6 +69,15 @@ class TestOneEmailOnTwoForges:
                          pr("acme/svc", "feat/c", login="ann.b", url=self.BB)])
         assert people.names(None, "ann") == {"ann"}
 
+    def test_one_login_elsewhere_does_not_join_two_logins_here(self):
+        people = People([pr("acme/web", "feat/a", author="a@laptop.lan", login="ann", url=self.GH),
+                         pr("acme/api", "feat/b", author="a@laptop.lan", login="ci-bot", url=self.BB),
+                         pr("acme/web", "feat/c", author="b@laptop.lan", login="bob", url=self.GH),
+                         pr("acme/api", "feat/d", author="b@laptop.lan", login="ci-bot", url=self.BB)])
+        assert not people.same(pr("acme/web", "x", author=None, login="ann"),
+                               pr("acme/web", "y", author=None, login="bob"))
+        assert people.names(None, "ann") == {"ann"}
+
     def test_an_unknown_forge_counts_on_every_forge(self):
         people = People([pr("acme/web", "feat/a", login="ann", url=self.GH),
                          pr("acme/api", "feat/b", login="bob")])
