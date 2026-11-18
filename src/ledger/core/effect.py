@@ -194,6 +194,40 @@ def shared_names(a: set[str], b: set[str]) -> list[str]:
     return []
 
 
+_TOKEN = re.compile(r"\w[\w.\-/:]*|\S")
+
+
+def _carried(name: str, plus: str, minus: str, names: set[str]) -> bool:
+    """Every line naming `name` is kept, only grown by other contract names.
+
+    Each removed line naming it has an added one holding all its tokens, and
+    whatever the added one has beyond them is another contract's name. A
+    payload grown by a field is not this: its new tokens are no contract.
+    """
+    from collections import Counter
+    rem = [x for x in minus.splitlines() if name in x]
+    add = [x for x in plus.splitlines() if name in x]
+    if not rem or len(rem) != len(add):
+        return False
+    others = names - {name}
+    used: set[int] = set()
+    for line in rem:
+        have = Counter(_TOKEN.findall(line))
+        for j, other in enumerate(add):
+            if j in used:
+                continue
+            got = Counter(_TOKEN.findall(other))
+            if have - got:
+                continue
+            extra = [t for t in (got - have) if re.search(r"\w", t)]
+            if extra and all(t.strip("'\"") in others for t in extra):
+                used.add(j)
+                break
+        else:
+            return False
+    return True
+
+
 def delta_of(repo: str, files, *, extra: dict[ContractRef, set[Edge]] | None = None) -> Delta:
     """Reduce a change's diff to a `Delta`. Same input, same output.
 
@@ -208,6 +242,13 @@ def delta_of(repo: str, files, *, extra: dict[ContractRef, set[Edge]] | None = N
         d.files += 1
         plus, minus = _sides(f.body or "")
         a, r = _edges(repo, f.path, plus), _edges(repo, f.path, minus)
+        # A topic on a line rewritten around it -- `in ("A", "B")` growing a
+        # `"C"` -- is carried, not touched: a decision about `A` bound a
+        # change that only added `C` next to it.
+        names = {c.name for c in set(a) | set(r)}
+        for c in set(a) & set(r):
+            if c.surface == Surface.TOPIC and a[c] == r[c] and _carried(c.name, plus, minus, names):
+                del a[c], r[c]
         for c in set(a) | set(r):
             if c in a and c in r:
                 d.changed.setdefault(c, set()).update(a[c] | r[c])

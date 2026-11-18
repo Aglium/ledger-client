@@ -44,7 +44,8 @@ from ledger.core.overlap import DiffFile, Kind, extract_signals
 #: (`mentions:topic:...`), and tests touch no contract.
 #: s5: a topic named only, on both sides, is no link; dependency manifests and
 #: attribute-key constants name no topic; event kinds like `Orders.Created`.
-SIGNALS_VERSION = "s5"
+#: s6: a topic on a line only grown by other topics is carried, not touched.
+SIGNALS_VERSION = "s6"
 
 #: Topics, tables and migrations. See the module docstring for the 536,820 to
 #: 6,620 that chose this.

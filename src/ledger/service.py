@@ -793,8 +793,15 @@ class LiveIndex:
                         touching.setdefault(y, set()).add((c.repo, c.ref))
                         seen.append((c, x, theirs, y))
         hits: dict = {}
+        # Repositories on the contract, the asking one included: the same
+        # count from either end, so a link holds both ways. Counted by change
+        # and without the asker, one end saw five branches of a dashboards
+        # repository the other end never counted, and only one brief named
+        # the other.
+        repos_on = {y: {r for r, _ref in v} | ({exclude_repo} if exclude_repo else set())
+                    for y, v in touching.items()}
         for c, x, theirs, y in seen:
-            if len(touching.get(y, ())) > CONTRACT_RARE:
+            if len(repos_on.get(y, ())) > CONTRACT_RARE:
                 continue
             if edges is not None and not edges_meet(set(edges.get(y, ())), theirs, y.surface):
                 continue
@@ -1554,13 +1561,19 @@ def _link_without_a_ticket_key(b: ImpactBrief, index, repo: str, ref: str,
     # documentation fixes half an hour apart. A stored index weighs it with
     # everything else it knows about both changes.
     near_only = index.source == "live" and all(why.startswith("same author") for _, why in found)
+    mine = {t.upper() for t in (*b.tickets, *diff_tickets)}
     for c, why in found[:4]:
+        # Shared: on both sides. Their own tickets listed as shared, under a
+        # line saying no ticket links them, read as a contradiction.
+        shared = sorted({t for t in c.tickets if t.upper() in mine})
+        if shared and "no ticket links them" in why:
+            why = why.replace("no ticket links them", f"both carry {', '.join(shared)}")
         # Into `impacts` only. Renderers already lift in-flight work into the
         # block of things the repository cannot show, so adding it to
         # `not_local` as well printed every one of these twice.
         b.impacts.append(Impact(
             repo=c.repo, ref=c.ref, kind=c.kind, author=c.author,
-            shared_tickets=list(c.tickets), where=c.integration_ref, sha=c.sha, how=why,
+            shared_tickets=shared, where=c.integration_ref, sha=c.sha, how=why,
             target=c.base_ref))
     # The verdict's own sentence is now false. Left in place it read "no
     # cross-repo work shares this ticket" directly above the cross-repo work.

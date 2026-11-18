@@ -161,3 +161,39 @@ class TestOppositeMoves:
         t = ContractRef(Surface.TABLE, "audit_log")
         assert opposite_moves(delta(removed={t: {Edge.PUBLISHES}}),
                               delta(added={t: {Edge.PUBLISHES}})) is None
+
+
+class TestSharedTicketsAreShared:
+    """An item's shared tickets are the ones on both sides, and its line says
+    so; their own tickets under "no ticket links them" read as a contradiction."""
+
+    def run(self, theirs_tickets):
+        from ledger.core.brief import ImpactBrief
+        from ledger.core.join import Change, Sibling
+
+        class Index:
+            source = "stored"
+
+            def siblings_by_tickets(self, *a, **k):
+                return []
+
+            def siblings_by_contract(self, *a, **k):
+                c = Change(repo="acme-mailer", ref="feat/x", tickets=theirs_tickets)
+                return [(Sibling(c, tuple(theirs_tickets)), ["order.placed.v1"])]
+
+            def siblings_by_signal(self, *a, **k):
+                return []
+
+        b = ImpactBrief(repo="acme-orders", ref="feat/y", tickets=["ABC-1"],
+                        recommendation="proceed", confidence="high")
+        service._link_without_a_ticket_key(b, Index(), "acme-orders", "feat/y", [], None,
+                                           touched=[PLACED], edges={})
+        return b.impacts[0]
+
+    def test_a_ticket_on_both_sides_is_named(self):
+        i = self.run(("ABC-1", "ABC-9"))
+        assert i.shared_tickets == ["ABC-1"] and "both carry ABC-1" in i.how
+
+    def test_their_own_ticket_alone_is_not_shared(self):
+        i = self.run(("ABC-9",))
+        assert i.shared_tickets == [] and "no ticket links them" in i.how

@@ -244,3 +244,29 @@ class TestSharedNames:
         d = delta_of("r", [F("app/a.py", "+claim_flags = read()\n"),
                            F("tests/test_a.py", "+fixture_only_name = 1\n")])
         assert d.names == {"claimflags"}
+
+
+class TestCarriedTopics:
+    """A topic on a line only grown by another topic is carried, not touched:
+    a decision about the first stopped a change that added the second."""
+
+    class F:
+        def __init__(self, path, body):
+            self.path, self.body = path, body
+
+    def test_a_tuple_grown_by_another_event_touches_only_that_one(self):
+        from ledger.core.effect import delta_of
+        d = delta_of("acme-intake", [self.F(
+            "app/intake.py",
+            '-    if kind in ("Draft.Submitted", "Order.Created"):\n'
+            '+    if kind in ("Draft.Submitted", "Order.Created", "Files.Received"):\n')])
+        names = {c.name for c in (*d.added, *d.changed, *d.removed)}
+        assert names == {"Files.Received"}
+
+    def test_a_payload_losing_a_field_still_touches_its_topic(self):
+        from ledger.core.effect import delta_of
+        d = delta_of("acme-orders", [self.F(
+            "app/pub.py",
+            '-    producer.send("orders.created", {"id": 1, "total": 2})\n'
+            '+    producer.send("orders.created", {"id": 1})\n')])
+        assert {c.name for c in d.changed} == {"orders.created"}
