@@ -50,7 +50,8 @@ _TAG = re.compile(r"^\s*<[A-Za-z!?]")
 #: removed name is still there: `# the old mariadb-tunnel sidecar` keeps no
 #: service alive.
 _COMMENT_LINE = re.compile(r"^\s*(?:#|//|/\*|\*|<!--|--\s|;)")
-_TRAILING_COMMENT = re.compile(r"\s(?:#|//)\s.*$")
+#: Only `#` after code: `total // batch_size` is a division, not a comment.
+_TRAILING_COMMENT = re.compile(r"\s#\s.*$")
 #: Prose: a `#` there is a heading, not a comment.
 _PROSE_PATH = re.compile(r"\.(md|markdown|rst|txt|adoc)$", re.I)
 #: Imports: two changes importing the same name have not met.
