@@ -43,6 +43,7 @@ from ledger.pipeline.collect import collect_for
 from ledger.pipeline.decisions import load_decisions
 from ledger.pipeline.scan import ScanCache
 from ledger.core.branches import DEFAULT_RULES, expand_integration
+from ledger.timings import spent
 
 
 class LedgerError(Exception):
@@ -953,7 +954,8 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         subj = Subject(repos, repos[repo], 0)
         missing_ref = True
     index = open_index(subj.repos)
-    port_of = None if missing_ref else _port_of(cfg, vcs, repo, ref, subj)
+    with spent("port_of"):
+        port_of = None if missing_ref else _port_of(cfg, vcs, repo, ref, subj)
     watch.lap("subject")
 
     # In-flight work: from the stored index where there is one. Re-enumerating
@@ -1456,7 +1458,8 @@ def _merged_not_released(cfg: Config, vcs, index, i, base: str | None):
     if i.kind != "pr" or not target or not base or base == target:
         return None
     try:
-        merge = vcs.landing_merge(i.repo, base, i.ref)
+        with spent("landing_merge"):
+            merge = vcs.landing_merge(i.repo, base, i.ref)
     except ForgeUnavailable:
         return None
     if not merge:
@@ -1804,7 +1807,8 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             c = item[0]
             bases[c.ref] = cb = _own_base_of(cfg, vcs, subj, repo, c)
             try:
-                empty = cb is not None and vcs.adds_nothing(repo, cb, c.ref) is True
+                with spent("adds_nothing"):
+                    empty = cb is not None and vcs.adds_nothing(repo, cb, c.ref) is True
             except ForgeUnavailable:
                 empty = False
             if not empty:
@@ -1837,7 +1841,8 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
                 continue
             if cb == default and subj.base != default:
                 try:
-                    theirs_port = vcs.work_landed(repo, subj.base, c.ref, cb)
+                    with spent("work_landed"):
+                        theirs_port = vcs.work_landed(repo, subj.base, c.ref, cb)
                 except ForgeUnavailable:
                     theirs_port = None
                 if theirs_port:
@@ -1846,8 +1851,9 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         if can_read and reads < cap:
             reads += 1
             readable = sorted(shared, key=lambda p: (p in hot, users.get(p, 0), p))[:PLACES_FILES]
-            verdict = _compare_places(cfg, vcs, subj, repo, ref, c, readable, mine_by_path, mine_at,
-                                      texts=texts, uncommitted=uncommitted)
+            with spent("compare_places"):
+                verdict = _compare_places(cfg, vcs, subj, repo, ref, c, readable, mine_by_path,
+                                          mine_at, texts=texts, uncommitted=uncommitted)
         if verdict is None:
             # Not readable: the file is all there is, and a crowded one is not enough.
             kept = [p for p in shared if p not in hot]
@@ -1859,7 +1865,8 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             # Its work reached its target already -- squashed, then edited
             # there since -- and the open pull request was never closed.
             try:
-                gone_in = vcs.work_landed(repo, cb, c.ref, cb)
+                with spent("work_landed"):
+                    gone_in = vcs.work_landed(repo, cb, c.ref, cb)
             except ForgeUnavailable:
                 gone_in = None
             if gone_in:
@@ -2055,11 +2062,12 @@ def _read_places(vcs, subj, repo: str, ref: str, c, base: str, shared: list[str]
                  mine_by_path: dict, mine_at: dict, texts: dict | None):
     """`_compare_places` once its inputs are known not to be cached."""
     from ledger.core.places import beside, label, meet, places_of, removed_used
-    contained = vcs.work_contained(repo, ref, c.ref, base)
-    if contained is None:
-        return None
-    if contained or (subj.own_commits and vcs.work_contained(repo, c.ref, ref, subj.base)):
-        return ("same_work", None)
+    with spent("work_contained"):
+        contained = vcs.work_contained(repo, ref, c.ref, base)
+        if contained is None:
+            return None
+        if contained or (subj.own_commits and vcs.work_contained(repo, c.ref, ref, subj.base)):
+            return ("same_work", None)
     try:
         theirs = {f.path: f for f in vcs.changed_files_in(repo, base, c.ref, list(shared))}
         wanted = [p for p in shared if p in theirs and p in mine_by_path]

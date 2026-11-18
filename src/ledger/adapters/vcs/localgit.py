@@ -168,6 +168,26 @@ def _read_blobs(p: Path, rev: str, paths: list[str], source: str = "localgit") -
 
 #: A line with a word or number in it; `}` or `),` alone says nothing.
 _SAYS = re.compile(r"\w")
+#: Answers by commit: what two commits are to each other never changes. A run
+#: over every open change asks of each pair from both ends, and every brief of
+#: a port asked the same of its own large diff once per candidate.
+_BY_COMMITS: dict[tuple, object] = {}
+_BY_COMMITS_MAX = 20_000
+#: The diffs and file reads `_hunks_in` repeats for one change, by commit.
+#: Large: kept to a few.
+_TEXTS: dict[tuple, object] = {}
+_TEXTS_MAX = 64
+#: Files `_hunks_in` compares, at most; past it the patches decide.
+_HUNKS_PATHS = 60
+
+
+def _remember(memo: dict, limit: int, key: tuple, value):
+    if len(memo) >= limit:
+        memo.clear()
+    memo[key] = value
+    return value
+
+
 #: Files `work_landed` reads `into`'s history of, at most; past it, it cannot say.
 _LANDED_PATHS = 60
 #: Shorter lines (`return x;`) are in every history: they prove nothing landed.
@@ -812,7 +832,45 @@ class LocalGitAdapter(VcsAdapter):
             return None
         return merge
 
+    def _shas(self, p: Path, *refs: str) -> tuple | None:
+        """The commits `refs` stand for, cheaply; None when one cannot be read."""
+        refs_on_disk = self._refs(p)
+        out = []
+        for ref in refs:
+            sha = next((refs_on_disk[c] for c in (f"refs/heads/{ref}", f"refs/remotes/origin/{ref}")
+                        if c in refs_on_disk), None)
+            if sha is None:
+                try:
+                    sha = _git(p, "rev-parse", f"{self._resolve(p, ref)}^{{commit}}").strip()
+                except ForgeUnavailable:
+                    return None
+            out.append(sha)
+        return tuple(out)
+
+    def _by_commits(self, name: str, repo: str, refs: tuple, compute):
+        p = self._path(repo)
+        shas = self._shas(p, *refs)
+        key = (name, str(p), shas) if shas is not None else None
+        if key is not None and key in _BY_COMMITS:
+            return _BY_COMMITS[key]
+        got = compute()
+        if key is not None and got is not None:
+            _remember(_BY_COMMITS, _BY_COMMITS_MAX, key, got)
+        return got
+
     def adds_nothing(self, repo: str, into: str, head: str) -> bool | None:
+        return self._by_commits("adds_nothing", repo, (into, head),
+                                lambda: self._adds_nothing(repo, into, head))
+
+    def work_landed(self, repo: str, into: str, inner: str, inner_base: str) -> bool | None:
+        return self._by_commits("work_landed", repo, (into, inner, inner_base),
+                                lambda: self._work_landed(repo, into, inner, inner_base))
+
+    def work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
+        return self._by_commits("work_contained", repo, (outer, inner, inner_base),
+                                lambda: self._work_contained(repo, outer, inner, inner_base))
+
+    def _adds_nothing(self, repo: str, into: str, head: str) -> bool | None:
         p = self._path(repo)
         try:
             into_ref, head_ref = self._resolve(p, into), self._resolve(p, head)
@@ -822,7 +880,7 @@ class LocalGitAdapter(VcsAdapter):
             return None
         return _merges_to_itself(p, into_ref, head_ref)
 
-    def work_landed(self, repo: str, into: str, inner: str, inner_base: str) -> bool | None:
+    def _work_landed(self, repo: str, into: str, inner: str, inner_base: str) -> bool | None:
         p = self._path(repo)
         try:
             into_ref, inner_ref = self._resolve(p, into), self._resolve(p, inner)
@@ -865,7 +923,7 @@ class LocalGitAdapter(VcsAdapter):
                         checked += 1
         return checked > 0
 
-    def work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
+    def _work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
         p = self._path(repo)
         try:
             outer_ref, inner_ref = self._resolve(p, outer), self._resolve(p, inner)
@@ -912,7 +970,12 @@ class LocalGitAdapter(VcsAdapter):
         """
         try:
             fork = _git(p, "merge-base", base, inner).strip()
-            raw = _git(p, "diff", "--unified=0", "--no-renames", f"{fork}..{inner}")
+            inner_sha = _git(p, "rev-parse", f"{inner}^{{commit}}").strip()
+            key = ("diff", str(p), fork, inner_sha)
+            raw = _TEXTS.get(key)
+            if raw is None:
+                raw = _remember(_TEXTS, _TEXTS_MAX, key,
+                                _git(p, "diff", "--unified=0", "--no-renames", f"{fork}..{inner}"))
         except ForgeUnavailable:
             return False
         added: dict[str, list[tuple[str, ...]]] = {}
@@ -938,11 +1001,14 @@ class LocalGitAdapter(VcsAdapter):
                 minus.append(line[1:])
         close()
         paths = sorted(set(added) | set(removed))
-        if not paths or len(paths) > _CONTAINED_PATHS:
+        if not paths or len(paths) > _HUNKS_PATHS:
             return False
         try:
             texts = _read_blobs(p, outer, paths, self.source)
-            theirs = _read_blobs(p, inner, paths, self.source)
+            key = ("blobs", str(p), inner_sha, tuple(paths))
+            theirs = _TEXTS.get(key)
+            if theirs is None:
+                theirs = _remember(_TEXTS, _TEXTS_MAX, key, _read_blobs(p, inner, paths, self.source))
         except ForgeUnavailable:
             return False
         outer_lines = {k: v.splitlines() for k, v in texts.items()}

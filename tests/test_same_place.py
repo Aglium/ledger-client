@@ -529,3 +529,27 @@ def test_other_paragraphs_of_one_document_keep_a_sure_proceed(tmp_path, work):
     assert any(r.startswith("note: also changes the same file(s) in other places: `feat/theirs`")
                for r in b.reasons)
     assert b.recommendation == "proceed" and b.confidence == "high"
+
+
+def test_a_measured_brief_says_where_same_repository_time_went(tmp_path, work, monkeypatch):
+    import json
+    out = tmp_path / "timings.jsonl"
+    monkeypatch.setenv("LEDGER_TIMINGS", str(out))
+    commit(work, "feat/mine", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")})
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("    return e.code\n", "    return 0\n")})
+    brief(tmp_path, work)
+    line = json.loads(out.read_text().splitlines()[-1])
+    assert "compare_places" in line["parts"] and line["counts"]["work_contained"] >= 1
+
+
+def test_a_pair_asked_twice_is_read_once(tmp_path, work, monkeypatch):
+    import ledger.adapters.vcs.localgit as lg
+    commit(work, "feat/mine", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")})
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("    return e.code\n", "    return 0\n")})
+    root = tmp_path / "m"
+    subprocess.run(["git", "clone", "-q", "--mirror", str(work), str(root / "core.git")], check=True)
+    vcs = LocalGitAdapter(root)
+    first = vcs.work_contained("core", "feat/mine", "feat/theirs", "main")
+    calls = []
+    monkeypatch.setattr(lg, "_merges_to_itself", lambda *a: calls.append(a) or None)
+    assert vcs.work_contained("core", "feat/mine", "feat/theirs", "main") == first and calls == []

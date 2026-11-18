@@ -14,6 +14,9 @@ def _no_answer_carries_over():
     """Commits made the same way in two tests have the same ids: an answer
     remembered by commit in one must not be served in the next."""
     from ledger import service
-    service._PLACE_VERDICTS.clear()
+    from ledger.adapters.vcs import localgit
+    for memo in (service._PLACE_VERDICTS, localgit._BY_COMMITS, localgit._TEXTS):
+        memo.clear()
     yield
-    service._PLACE_VERDICTS.clear()
+    for memo in (service._PLACE_VERDICTS, localgit._BY_COMMITS, localgit._TEXTS):
+        memo.clear()
