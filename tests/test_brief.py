@@ -368,6 +368,17 @@ class TestDecisionsInFlight:
         assert "sits on `docs/adr-order-created`" in " ".join(b.reasons)
         assert "Alice Example" in " ".join(b.reasons)
 
+    def test_a_drafted_decision_on_a_PORT_is_context(self):
+        """A port to the default branch carries work already reviewed where
+        it landed first; a draft about that work was that branch's to answer."""
+        d = adr(ticket="ABC-321", ref="docs/adr-order-created", status=DecisionStatus.PROPOSED,
+                title="`order_line` ownership moves to billing")
+        b = build_brief(find_siblings(SUBJ, [SUBJ]), [d],
+                        contracts=[ContractRef(Surface.TABLE, "order_line")], port_of="stage",
+                        **READ_ELSEWHERE)
+        assert b.recommendation != Recommendation.DECISION_NEEDED.value
+        assert any("ports work already on `stage`" in r for r in b.reasons)
+
     def test_a_drafted_decision_sharing_ONLY_A_TICKET_does_not(self):
         """The measured false positive: three branches were stopped by an
         unmerged ADR about shipment-data transport, because a ten-item ticket

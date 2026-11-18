@@ -168,6 +168,31 @@ def _read_blobs(p: Path, rev: str, paths: list[str], source: str = "localgit") -
 
 #: A line with a word or number in it; `}` or `),` alone says nothing.
 _SAYS = re.compile(r"\w")
+#: Files `work_landed` reads `into`'s history of, at most; past it, it cannot say.
+_LANDED_PATHS = 60
+#: Shorter lines (`return x;`) are in every history: they prove nothing landed.
+_LANDED_LINE = 8
+
+
+def _diff_lines(raw: str, sign: str) -> dict[str, list[list[str]]]:
+    """Per file, the blocks of lines a `--unified=0` diff or log adds (`+`) or removes (`-`)."""
+    out: dict[str, list[list[str]]] = {}
+    path, block = None, []
+
+    def close():
+        if path is not None and block:
+            out.setdefault(path, []).append(list(block))
+    for line in raw.splitlines():
+        if line.startswith("diff --git "):
+            close()
+            path, block = line.split(" b/", 1)[-1], []
+        elif line.startswith("@@"):
+            close()
+            block = []
+        elif line.startswith(sign) and not line.startswith(sign * 3):
+            block.append(line[1:])
+    close()
+    return out
 
 
 def _blocks_in(lines: list[str], block: tuple[str, ...]) -> int:
@@ -786,6 +811,59 @@ class LocalGitAdapter(VcsAdapter):
                 or not _is_ancestor(p, tip, parents[1]):
             return None
         return merge
+
+    def adds_nothing(self, repo: str, into: str, head: str) -> bool | None:
+        p = self._path(repo)
+        try:
+            into_ref, head_ref = self._resolve(p, into), self._resolve(p, head)
+            if _git(p, "rev-list", "--no-merges", "-n", "1", head_ref, f"^{into_ref}").strip():
+                return False        # a commit of its own: work, whatever its merges
+        except ForgeUnavailable:
+            return None
+        return _merges_to_itself(p, into_ref, head_ref)
+
+    def work_landed(self, repo: str, into: str, inner: str, inner_base: str) -> bool | None:
+        p = self._path(repo)
+        try:
+            into_ref, inner_ref = self._resolve(p, into), self._resolve(p, inner)
+            base = self._resolve_base(p, inner_base, inner)
+            if not _git(p, "rev-list", "--no-merges", "-n", "1", inner_ref, f"^{base}").strip():
+                return None         # nothing of its own to have landed
+            if not _git(p, "rev-list", "--no-merges", "-n", "1", inner_ref, f"^{base}",
+                        f"^{into_ref}").strip():
+                return True         # every commit of it is on `into`
+            own = _git(p, "merge-base", base, inner_ref).strip()
+            raw = _git(p, "diff", "--unified=0", "--no-renames", f"{own}..{inner_ref}", timeout=60)
+            fork = _git(p, "merge-base", into_ref, inner_ref).strip()
+        except ForgeUnavailable:
+            return None
+        added, removed = _diff_lines(raw, "+"), _diff_lines(raw, "-")
+        paths = sorted(set(added) | set(removed))
+        if not paths or len(paths) > _LANDED_PATHS:
+            return None
+        try:
+            log = _git(p, "log", "-p", "--unified=0", "--no-renames", "--format=",
+                       f"{fork}..{into_ref}", "--", *paths, timeout=90)
+        except ForgeUnavailable:
+            return None
+        if not log.strip():
+            return False
+        def lines_of(found):
+            return {path: {x.strip() for b in blocks for x in b} for path, blocks in found.items()}
+        did_add, did_remove = lines_of(_diff_lines(log, "+")), lines_of(_diff_lines(log, "-"))
+        checked = 0
+        for want, did in ((added, did_add), (removed, did_remove)):
+            for path, blocks in want.items():
+                have = did.get(path, set())
+                for b in blocks:
+                    for x in b:
+                        x = x.strip()
+                        if len(x) < _LANDED_LINE or not _SAYS.search(x):
+                            continue
+                        if x not in have:
+                            return False
+                        checked += 1
+        return checked > 0
 
     def work_contained(self, repo: str, outer: str, inner: str, inner_base: str) -> bool | None:
         p = self._path(repo)

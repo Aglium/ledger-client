@@ -651,6 +651,8 @@ def build_brief(
     own_commits: int | None = None,
     uncommitted: list[str] | None = None,
     integrated_in: str | None = None,
+    #: The integration branch this change ports work from (`stage` to `main`).
+    port_of: str | None = None,
 ) -> ImpactBrief:
     """Assemble the brief and commit to a recommendation.
 
@@ -743,6 +745,11 @@ def build_brief(
     drafting = [l for l in strong
                 if l.ref and not l.integrated and l.ref != subject.ref
                 and l.basis in ABOUT_THIS_CHANGE and over_directed(l)]
+    # A port carries work already reviewed and decided where it landed: a
+    # draft or an open condition about that work was that branch's to answer.
+    ported = (hit_gates + drafting) if port_of else []
+    if port_of:
+        hit_gates, drafting = [], []
     #: Linked, named in the brief, but never a reason to stop.
     context_only = [l for l in strong if l.basis not in ABOUT_THIS_CHANGE]
     #: Strong and about this change, but over a contract no other repository
@@ -857,7 +864,15 @@ def build_brief(
     else:
         brief.reasons.append("no cross-repo work shares this ticket and no binding decision names it")
 
-    ticket_gates = [l for l in links if l.gate_hit and l not in hit_gates and l.ref is None]
+    if ported:
+        l = ported[0]
+        brief.reasons.append(
+            f"a decision that {l.why.split(';')[0]} is still open ({l.title[:80]}); this change "
+            f"ports work already on `{port_of}`, where it was that work's to answer, so it is "
+            "context, not a decision for this change")
+
+    ticket_gates = [l for l in links if l.gate_hit and l not in hit_gates and l not in ported
+                    and l.ref is None]
     if ticket_gates and brief.recommendation != Recommendation.DECISION_NEEDED.value:
         l = ticket_gates[0]
         brief.reasons.append(

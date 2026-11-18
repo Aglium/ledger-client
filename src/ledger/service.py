@@ -380,6 +380,29 @@ def resolve_subject(cfg: Config, vcs: VcsAdapter, repo: str, ref: str, *,
     return Subject(repos, base, own)
 
 
+def _port_of(cfg: Config, vcs: VcsAdapter, repo: str, ref: str, subj: Subject) -> str | None:
+    """The integration branch a change into the default branch carries work from.
+
+    A port: `stage` to `main`, as a merge, a squash or cherry-picks, of work
+    `stage` may have edited since. Its work was reviewed and decided where it
+    landed first; a pull request into `stage` meets it only at the next port.
+    """
+    if subj.integrated_in:
+        return subj.integrated_in
+    default = subj.repos.get(repo)
+    if subj.base != default or not subj.own_commits:
+        return None
+    for cand in integration_candidates(cfg, vcs, repo):
+        if cand == default:
+            continue
+        try:
+            if vcs.work_landed(repo, cand, ref, subj.base):
+                return cand
+        except ForgeUnavailable:
+            continue
+    return None
+
+
 def _merged_into(vcs: VcsAdapter, repo: str, into: str, ref: str, default: str) -> bool:
     try:
         return vcs.merged_into(repo, into, ref, default)
@@ -923,6 +946,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
         subj = Subject(repos, repos[repo], 0)
         missing_ref = True
     index = open_index(subj.repos)
+    port_of = None if missing_ref else _port_of(cfg, vcs, repo, ref, subj)
     watch.lap("subject")
 
     # In-flight work: from the stored index where there is one. Re-enumerating
@@ -1182,7 +1206,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
                          integration_branches=tuple(cfg.integration_branches),
                          resolved=True, base=subj.base,
                          own_commits=None if missing_ref else subj.own_commits,
-                         integrated_in=subj.integrated_in,
+                         integrated_in=subj.integrated_in, port_of=port_of,
                          uncommitted=[f.path for f in pending])
         _link_without_a_ticket_key(bb, index, repo, ref, diff_tickets, found, subject_signals,
                                    touched=touched, skip=skip, edges=yours)
@@ -1214,7 +1238,7 @@ def compute_brief(cfg: Config, adapters: list[VcsAdapter], repo: str, ref: str,
     watch.lap("described")
     _same_repo_work(b, cfg, vcs, index, repo, ref, subj, result, shipped if mine_read else None,
                     yours=yours, texts=local.texts if local is not None else None,
-                    uncommitted={f.path for f in pending})
+                    uncommitted={f.path for f in pending}, port_of=port_of)
     watch.lap("same_repo")
     for i in b.impacts:
         if i.kind == "integration" and (i.repo, i.ref) in merges and i.how is None:
@@ -1672,7 +1696,7 @@ _PLACE_VERDICTS_MAX = 20_000
 
 def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str, subj,
                     result, mine, *, yours, texts: dict | None = None,
-                    uncommitted=frozenset()) -> None:
+                    uncommitted=frozenset(), port_of: str | None = None) -> None:
     """Open work in this same repository that changes the same files.
 
     The rest of the brief is about repositories the reviewer is not looking
@@ -1755,6 +1779,25 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
         elif tickets:
             ticket_only.append((c, tickets))
 
+    can_read = cap == SAME_REPO_CAP
+    # A branch whose merge into its own target changes nothing -- a release
+    # assembly of branches merged there too -- is no work at all, though its
+    # diff from where it parted lists every file they touched. Left out
+    # before files are counted: it made a rarely changed file look crowded.
+    bases: dict[str, str | None] = {}
+    if can_read:
+        kept_found = []
+        for item in found:
+            c = item[0]
+            bases[c.ref] = cb = _own_base_of(cfg, vcs, subj, repo, c)
+            try:
+                empty = cb is not None and vcs.adds_nothing(repo, cb, c.ref) is True
+            except ForgeUnavailable:
+                empty = False
+            if not empty:
+                kept_found.append(item)
+        found = kept_found
+
     # A file most open changes edit -- a service registry, a translation
     # catalogue -- says nothing by being shared: each change edits its own
     # entry. Counted over every open change that shares a file with this one.
@@ -1764,13 +1807,29 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             users[p] = users.get(p, 0) + 1
     hot = {p for p, n in users.items() if n > SAME_REPO_HOT}
 
-    can_read = cap == SAME_REPO_CAP
     met, mechanical, same_work, elsewhere = [], [], [], []
+    #: Pairs across a port: this a port of `stage` and theirs into `stage`, or
+    #: the other way round. They meet at the next port, not here.
+    across, landed = [], []
+    default = subj.repos.get(repo)
     mine_at: dict[str, object] = {}
     mine_by_path = {f.path: f for f in mine}
     reads = 0
     for c, shared, tickets in found:
         verdict, readable = None, shared
+        cb = bases.get(c.ref)
+        if can_read and cb and cb != subj.base:
+            if port_of and cb == port_of:
+                across.append((c, cb))
+                continue
+            if cb == default and subj.base != default:
+                try:
+                    theirs_port = vcs.work_landed(repo, subj.base, c.ref, cb)
+                except ForgeUnavailable:
+                    theirs_port = None
+                if theirs_port:
+                    across.append((c, subj.base))
+                    continue
         if can_read and reads < cap:
             reads += 1
             readable = sorted(shared, key=lambda p: (p in hot, users.get(p, 0), p))[:PLACES_FILES]
@@ -1783,6 +1842,16 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
                 met.append((c, kept, tickets, [], None))
             continue
         kind, detail = verdict
+        if kind in ("places", "removes", "beside") and cb:
+            # Its work reached its target already -- squashed, then edited
+            # there since -- and the open pull request was never closed.
+            try:
+                gone_in = vcs.work_landed(repo, cb, c.ref, cb)
+            except ForgeUnavailable:
+                gone_in = None
+            if gone_in:
+                landed.append((c, cb))
+                continue
         # Past `PLACES_FILES` the rest was not read: "apart" or "only next to
         # each other" speaks for the files read, and an unread one may be
         # where they meet. Those stay a file-level item, as if unreadable.
@@ -1816,7 +1885,11 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
     # never leads: forty-eight paragraphs of an agents' guide both branches
     # carry put the real conflict of a publisher fourth.
     from ledger.core.effect import _PROSE
-    met.sort(key=lambda t: (t[4] is None, -sum(1 for p, _l in t[3] if not _PROSE.search(p)),
+    # A name removed that the other uses is a place too, and as strong as one:
+    # it used to lead every list, and a port's removal stood above a real
+    # conflict in a publisher. Only "beside" is weaker.
+    met.sort(key=lambda t: (bool(t[4]) and "right beside" in t[4],
+                            -sum(1 for p, _l in t[3] if not _PROSE.search(p)),
                             -len(t[3]), -len(t[1])))
 
     added: list[Impact] = []
@@ -1866,6 +1939,17 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             "note: the same work in another form (its commits are in the other), not listed: "
             + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
                         for c in same_work[:5]))
+    if across:
+        b.reasons.append(
+            "note: on the other side of a port, they meet at the next one, not here: "
+            + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
+                        + f" into `{where}`" for c, where in across[:5]))
+    if landed:
+        b.reasons.append(
+            "note: its work is on its target already (landed, then changed there), "
+            "not listed: "
+            + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
+                        + f" on `{where}`" for c, where in landed[:5]))
     if elsewhere:
         # Few other changes touch these files, and this one changes them too:
         # not an item, and not "nothing found" at high confidence either.
@@ -1873,7 +1957,10 @@ def _same_repo_work(b: ImpactBrief, cfg: Config, vcs, index, repo: str, ref: str
             "note: also changes the same file(s) in other places: "
             + ", ".join(f"`{c.ref}`" + (f" (#{c.pr_number})" if c.pr_number else "")
                         + f" in `{s[0].rsplit('/', 1)[-1]}`" for c, s in elsewhere[:5]))
-        if b.recommendation == Recommendation.PROCEED.value and b.confidence == "high":
+        # Documents only: two changes editing different paragraphs of a guide
+        # merge clean and say nothing about each other's code.
+        code = any(not _PROSE.search(p) for _c, sh in elsewhere for p in sh)
+        if code and b.recommendation == Recommendation.PROCEED.value and b.confidence == "high":
             b.confidence = "medium"
     if ticket_only:
         b.reasons.append(

@@ -456,3 +456,76 @@ def test_removing_a_service_a_comment_still_names_is_an_item(tmp_path, work):
     got = listed(brief(tmp_path, work))
     assert "feat/theirs" in got
     assert "this change removes `db-tunnel`" in got["feat/theirs"].how
+
+
+def test_an_assembly_of_merges_already_on_main_is_not_work(tmp_path, work):
+    """A branch of merges only, each branch merged into `main` too: merged,
+    it changes nothing, though its diff from where it parted lists every file."""
+    commit(work, "feat/one", {"errors.py": ERRORS.replace("code = 404", "code = 410")})
+    git(work, "checkout", "-qb", "release/assembly", "main")
+    git(work, "merge", "-q", "--no-ff", "-m", "merge one", "feat/one")
+    git(work, "checkout", "-q", "main")
+    git(work, "merge", "-q", "--no-ff", "-m", "merge one to main", "feat/one")
+    commit(work, "feat/mine", {"errors.py": (work / "errors.py").read_text().replace(
+        "return e.code", "return e.code or 500")})
+    git(work, "branch", "-q", "-f", "chore/assembly", "release/assembly")
+    b = brief(tmp_path, work)
+    assert "chore/assembly" not in listed(b)
+    assert not any("chore/assembly" in r for r in b.reasons)
+
+
+def test_work_squashed_into_main_and_edited_since_is_a_note(tmp_path, work):
+    """Their pull request was squashed into `main` and `main` changed those
+    lines afterwards; the open pull request is not work beside this one."""
+    commit(work, "feat/theirs", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")})
+    git(work, "merge", "-q", "--squash", "feat/theirs")
+    # Squashed together with another pull request's work: not their patch.
+    (work / "errors.py").write_text((work / "errors.py").read_text().replace("code = 409", "code = 499"))
+    git(work, "commit", "-qam", "Squashed theirs and another")
+    (work / "errors.py").write_text((work / "errors.py").read_text().replace("level=2", "level=5"))
+    git(work, "commit", "-qam", "Edited since")
+    commit(work, "feat/mine", {"errors.py": (work / "errors.py").read_text().replace(
+        "return e.code", "return e.code or 500")})
+    b = brief(tmp_path, work)
+    assert "feat/theirs" not in listed(b)
+    assert any(r.startswith("note: its work is on its target already") and "feat/theirs" in r
+               for r in b.reasons)
+
+
+def test_a_port_and_a_pull_request_into_its_source_meet_at_the_next_port(tmp_path, work):
+    """`port/one` brings to `main` what `stage` has; `feat/stage-fix` goes into
+    `stage`. They meet when `stage` is next ported, not here."""
+    git(work, "branch", "-q", "stage", "main")
+    commit(work, "feat/one", {"errors.py": ERRORS.replace("    log(e)\n", "    log(e, level=2)\n")},
+           base="stage")
+    git(work, "checkout", "-q", "stage")
+    git(work, "merge", "-q", "--no-ff", "-m", "merge one", "feat/one")
+    (work / "errors.py").write_text((work / "errors.py").read_text().replace("level=2", "level=3"))
+    git(work, "commit", "-qam", "stage moves on")
+    git(work, "checkout", "-q", "main")
+    git(work, "checkout", "-qb", "port/one", "main")
+    git(work, "cherry-pick", git(work, "rev-parse", "feat/one").strip())
+    git(work, "checkout", "-q", "main")
+    git(work, "checkout", "-qb", "feat/stage-fix", "stage")
+    (work / "errors.py").write_text((work / "errors.py").read_text().replace(
+        "    log(e, level=3)\n", "    log(e, level=4)\n"))
+    git(work, "commit", "-qam", "fix on stage")
+    git(work, "checkout", "-q", "main")
+    b = brief(tmp_path, work, ref="port/one")
+    assert "feat/stage-fix" not in listed(b)
+    assert any(r.startswith("note: on the other side of a port") and "feat/stage-fix" in r
+               for r in b.reasons)
+    theirs = brief(tmp_path, work, ref="feat/stage-fix")
+    assert "port/one" not in listed(theirs)
+
+
+def test_other_paragraphs_of_one_document_keep_a_sure_proceed(tmp_path, work):
+    guide = "".join(f"Paragraph {n} of the guide.\n\n" for n in range(6))
+    (work / "GUIDE.md").write_text(guide)
+    git(work, "add", "-A"); git(work, "commit", "-qm", "guide")
+    commit(work, "feat/mine", {"GUIDE.md": guide.replace("Paragraph 0 of", "Paragraph zero of")})
+    commit(work, "feat/theirs", {"GUIDE.md": guide.replace("Paragraph 5 of", "Paragraph five of")})
+    b = brief(tmp_path, work)
+    assert any(r.startswith("note: also changes the same file(s) in other places: `feat/theirs`")
+               for r in b.reasons)
+    assert b.recommendation == "proceed" and b.confidence == "high"

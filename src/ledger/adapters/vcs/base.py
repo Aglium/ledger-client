@@ -295,6 +295,25 @@ class VcsAdapter(ABC):
         """
         return None
 
+    def adds_nothing(self, repo: str, into: str, head: str) -> bool | None:
+        """Whether merging `head` into `into` would change nothing.
+
+        A branch of merges whose work is all on `into` already -- a release
+        assembly whose branches were merged there too. Its diff from where it
+        parted still lists every file those branches touched. None: cannot tell.
+        """
+        return None
+
+    def work_landed(self, repo: str, into: str, inner: str, inner_base: str) -> bool | None:
+        """Whether what `inner` does over `inner_base` was done on `into` since they parted.
+
+        By ancestry, or line by line in `into`'s history: a squash of it that
+        `into` has edited since, a port gathered from `into` that `into` has
+        moved past. Unlike `work_contained`, the lines need not be there now.
+        None: cannot tell.
+        """
+        return None
+
     def changed_paths(self, repo: str, base: str, head: str) -> list[str]:
         """Which files changed, without their contents.
 
