@@ -39,7 +39,20 @@ _CONTROL = re.compile(r"^\s*(?:\}\s*)?(if|else|elif|for|foreach|while|switch|cas
 _BRACKETISH = re.compile(r"^[\s{}()\[\];,]*$|^\s*\)")
 #: Lines whose own text says nothing: two changes adding a `}` do not meet.
 _TRIVIAL = re.compile(r"^[\s{}()\[\];,:\-*#/<>'\"`|=+.]*$|^\s*(?:return|break|continue|pass|end|"
-                      r"else|try|finally)\b\W*$")
+                      r"else|try|finally)\b\W*$|^\s*</[\w:.-]+>\s*$")
+#: A closing tag, `</a>`: like a `}`, it says nothing of its own.
+_CLOSING_TAG = re.compile(r"^\s*</[\w:.-]+>\s*$")
+#: A line that opens a markup element, `<a class="card" href="/x/">`. Its
+#: attributes are not keys: `<a class` is every card's "key". The line is its
+#: own place, by its whole text.
+_TAG = re.compile(r"^\s*<[A-Za-z!?]")
+#: Whole-line comments, and a comment after code, when deciding whether a
+#: removed name is still there: `# the old mariadb-tunnel sidecar` keeps no
+#: service alive.
+_COMMENT_LINE = re.compile(r"^\s*(?:#|//|/\*|\*|<!--|--\s|;)")
+_TRAILING_COMMENT = re.compile(r"\s(?:#|//)\s.*$")
+#: Prose: a `#` there is a heading, not a comment.
+_PROSE_PATH = re.compile(r"\.(md|markdown|rst|txt|adoc)$", re.I)
 #: Imports: two changes importing the same name have not met.
 _IMPORT = re.compile(r"^\s*(?:import|from|use|require|require_once|include|#include|using)\b")
 #: The key of a `key: value`, `key = value`, `"key": value` or `'key' => value` line.
@@ -63,6 +76,8 @@ def _specific(name: str) -> bool:
 
 def _declared(line: str) -> str | None:
     """The name a line declares: its key, or the function it opens."""
+    if _TAG.match(line):
+        return None
     if _is_func(line):
         names = _FUNC_NAME.findall(line)
         return names[0] if names else None
@@ -158,14 +173,29 @@ def _place(holders: list[str], line: str):
     text = line.strip()
     if _is_func(line):
         return ("in",) + tuple(holders) + (text,)
-    if not text or _TRIVIAL.match(text) or _IMPORT.match(text):
+    if not text or _TRIVIAL.match(text) or _IMPORT.match(text) or _CLOSING_TAG.match(text):
         return None
+    if _TAG.match(text):
+        return ("key",) + tuple(holders) + (text,)
     m = _KEY.match(text)
     return ("key",) + tuple(holders) + ((m.group(1) if m else text),)
 
 
-def places_of(after: str, body: str) -> Places:
-    """The places a change is at, from the file after it and its `--unified=0` hunks."""
+def _uncommented(text: str) -> str:
+    """The file without its comments: what code still names."""
+    out = []
+    for line in text.splitlines():
+        if _COMMENT_LINE.match(line):
+            continue
+        out.append(_TRAILING_COMMENT.sub("", line))
+    return "\n".join(out)
+
+
+def places_of(after: str, body: str, path: str = "") -> Places:
+    """The places a change is at, from the file after it and its `--unified=0` hunks.
+
+    `path` only says whether the file is prose, where `#` opens a heading.
+    """
     lines = after.splitlines()
     got = Places()
     hunks: list[tuple[int, int, list[str]]] = []
@@ -175,7 +205,7 @@ def places_of(after: str, body: str) -> Places:
             hunks.append((int(m.group(3)), int(m.group(4)) if m.group(4) is not None else 1, []))
         elif hunks and raw.startswith("-"):
             hunks[-1][2].append(raw[1:])
-    text = "\n".join(lines)
+    text = "\n".join(lines) if _PROSE_PATH.search(path or "") else _uncommented(after)
     tokens: set[str] | None = None      # the file's words, split once: a removed name is gone if absent
 
     def still_there(name: str) -> bool:
@@ -198,6 +228,12 @@ def places_of(after: str, body: str) -> Places:
         # Only whitespace moved -- `catch {}` put on two lines: nothing happened there.
         if gone and count and _squashed("".join(gone)) == _squashed("".join(lines[i] for i in added)):
             continue
+        # What the hunk does, both halves: each place it is at gets all of it.
+        # A replacement is a removal at the old line and an addition at the
+        # new one; two changes replacing one line differently share the old
+        # line's place, and its removal alone would read as the same edit.
+        edit = ({"-" + _squashed(x) for x in gone if x.strip()}
+                | {"+" + _squashed(lines[i]) for i in added if lines[i].strip()})
         for i in added:
             line = lines[i]
             if not line.strip():
@@ -225,7 +261,7 @@ def places_of(after: str, body: str) -> Places:
                 p = _place([lines[j].strip() for j in held], here)
             if p:
                 got.at.add(p)
-                got.edits.setdefault(p, set()).add("+" + _squashed(line))
+                got.edits.setdefault(p, set()).update(edit)
         if count:
             if not gone and first > 0:
                 before = first - 1
@@ -243,7 +279,7 @@ def places_of(after: str, body: str) -> Places:
             p = _place(_holders(lines, pos, _indent(line)), line)
             if p:
                 got.at.add(p)
-                got.edits.setdefault(p, set()).add("-" + _squashed(line))
+                got.edits.setdefault(p, set()).update(edit)
     return got
 
 

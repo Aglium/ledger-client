@@ -1978,11 +1978,11 @@ def _read_places(vcs, subj, repo: str, ref: str, c, base: str, shared: list[str]
             if path not in mine_texts:
                 return None
             after = mine_texts[path]
-            mine_at[path] = places_of(after, own.body or "") if len(after) <= PLACES_MAX else None
+            mine_at[path] = places_of(after, own.body or "", path) if len(after) <= PLACES_MAX else None
         if path not in their_texts:
             return None
         theirs_after = their_texts[path]
-        at = places_of(theirs_after, f.body or "") if len(theirs_after) <= PLACES_MAX else None
+        at = places_of(theirs_after, f.body or "", path) if len(theirs_after) <= PLACES_MAX else None
         if mine_at[path] is None or at is None:
             return None             # generated or vendored size: the file is all there is
         same, after = meet(mine_at[path], at)

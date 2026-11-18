@@ -396,3 +396,63 @@ def test_a_file_past_the_read_cap_still_counts(tmp_path, work, monkeypatch):
     monkeypatch.setattr(service, "PLACES_FILES", 1)
     got = listed(brief(tmp_path, work))
     assert "feat/theirs" in got and "z.py" in got["feat/theirs"].how
+
+
+class TestStep058Places:
+    """Two different replacements of one line meet; markup attributes are not
+    keys; a name left in a comment is still removed."""
+
+    TABLE = "# Layout\n\n|  dns  apps |\n| state | a |\nend\n"
+    BODY = "@@ -3,2 +3,2 @@\n-|  dns  apps |\n-| state | a |\n"
+
+    def test_two_replacements_of_one_line_meet(self):
+        a = places_of(self.TABLE.replace("apps |", "apps  gateway |").replace("| a |", "| a | sg |"),
+                      self.BODY, "docs/layout.md")
+        b = places_of(self.TABLE.replace("apps |", "apps  search |").replace("| a |", "| a | es |"),
+                      self.BODY, "docs/layout.md")
+        same, _after = meet(a, b)
+        assert ("key", "|  dns  apps |") in same
+
+    def test_the_same_replacement_is_still_the_same_edit(self):
+        after = self.TABLE.replace("apps |", "apps  gateway |").replace("| a |", "| a | sg |")
+        assert meet(places_of(after, self.BODY), places_of(after, self.BODY)) == ([], [])
+
+    PAGE = ('<div class="grid">\n  <a class="card" href="/old/">Old</a>\n'
+            '  <a class="card" href="/{x}/">\n    <h2>{x}</h2>\n  </a>\n</div>\n')
+
+    def test_each_its_own_card_after_one_line_is_only_an_insertion(self):
+        a = places_of(self.PAGE.format(x="alpha"), "@@ -2,0 +3,3 @@\n", "landing/index.html")
+        b = places_of(self.PAGE.format(x="beta"), "@@ -2,0 +3,3 @@\n", "landing/index.html")
+        same, after = meet(a, b)
+        assert same == [] and after
+        assert not any(p[-1] in ("<a class", "</a>") for p in a.at)
+
+    def test_a_tag_both_rewrite_is_a_place(self):
+        before = '<nav>\n  <a class="card" href="/old/">Old</a>\n</nav>\n'
+        body = '@@ -2 +2 @@\n-  <a class="card" href="/old/">Old</a>\n'
+        a = places_of(before.replace("Old</a>", "New</a>"), body)
+        b = places_of(before.replace("Old</a>", "Older</a>"), body)
+        assert meet(a, b)[0]
+
+    def test_a_name_left_in_a_comment_is_removed(self):
+        after = "services:\n  app:\n    image: a\n# the old db-tunnel sidecar is gone\n"
+        body = "@@ -4,3 +4,1 @@\n-  db-tunnel:\n-    image: t\n-    ports: [1]\n"
+        assert "db-tunnel" in places_of(after, body, "compose.yml").gone
+
+    def test_a_name_still_used_in_code_is_not_removed(self):
+        after = "services:\n  app:\n    depends_on: [db-tunnel]  # keep\n"
+        body = "@@ -4,2 +3,0 @@\n-  db-tunnel:\n-    image: t\n"
+        assert "db-tunnel" not in places_of(after, body, "compose.yml").gone
+
+
+def test_removing_a_service_a_comment_still_names_is_an_item(tmp_path, work):
+    (work / "compose.yml").write_text(COMPOSE)
+    git(work, "add", "-A"); git(work, "commit", "-qm", "compose")
+    commit(work, "feat/mine", {"compose.yml": COMPOSE.replace("    depends_on:\n      - db-tunnel\n", "")
+                               .replace("  db-tunnel:\n    image: tunnel\n",
+                                        "  # the old db-tunnel sidecar went away\n")})
+    commit(work, "feat/theirs", {"compose.yml": COMPOSE + "  reports:\n    image: reports\n"
+                                 "    depends_on:\n      - db-tunnel\n"})
+    got = listed(brief(tmp_path, work))
+    assert "feat/theirs" in got
+    assert "this change removes `db-tunnel`" in got["feat/theirs"].how
